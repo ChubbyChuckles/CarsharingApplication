@@ -27,8 +27,6 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-Create a `.env` file in the project root (same folder as `pyproject.toml`) and add your Google key:
-
 ```text
 GOOGLE_MAPS_API_KEY=your-google-maps-api-key
 ```
@@ -39,9 +37,29 @@ Launch the application:
 python -m src.main
 ```
 
-On first launch the database file `src/rideshare.db` is created automatically with the required tables.
-The file `src/config/settings.json` is also created with sensible defaults (home address, fees, and window size) that will update as you use the app.
+On first launch the application seeds `%APPDATA%\TableTennisRideShare\rideshare.db` along with a matching `settings.json` file. When running from source those files are copied from `src/rideshare.db` and `src/config/settings.json` if present; otherwise they are initialised from the built-in defaults.
 If the **Google Maps API key** is missing the application still opens, but you'll see an in-app warning and autocomplete/distance calculations remain disabled until the key is added.
+
+## 🏗️ Build a Windows Installer (.msi)
+
+The project ships with a `cx_Freeze` configuration that produces a native Windows installer.
+
+```powershell
+# from the project root
+pip install -r requirements.txt
+python scripts/build_msi.py bdist_msi
+```
+
+Or run the helper script (supports `-Clean` to wipe previous build output):
+
+```powershell
+.
+\scripts\build_installer.ps1
+```
+
+Check the `dist/` directory for the generated `.msi` (for example, `TableTennisRideShareManager-0.1.0.msi`). Install it with a double-click or via `msiexec`. Place your `.env` file next to the installed `TableTennisRideShare.exe` (for example, `C:\Program Files\TableTennisRideShare\`) so the packaged app can find your Google Maps API key.
+
+All user-modifiable data (the SQLite database and `settings.json`) now live in `%APPDATA%\TableTennisRideShare` to avoid permission issues under `Program Files`.
 
 ## 🧭 Using the App
 

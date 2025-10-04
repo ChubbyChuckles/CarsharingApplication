@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sqlite3
 import sys
 from dataclasses import dataclass
@@ -71,9 +72,44 @@ from PyQt6.QtWidgets import (
 )
 
 
-DATABASE_FILE = Path(__file__).resolve().parent / "rideshare.db"
-STYLE_FILE = Path(__file__).resolve().parent / "resources" / "style.qss"
-SETTINGS_FILE = Path(__file__).resolve().parent / "config" / "settings.json"
+APP_BUNDLE_ROOT = Path(__file__).resolve().parent
+STYLE_FILE = APP_BUNDLE_ROOT / "resources" / "style.qss"
+_BUNDLED_DATABASE_FILE = APP_BUNDLE_ROOT / "rideshare.db"
+_BUNDLED_SETTINGS_FILE = APP_BUNDLE_ROOT / "config" / "settings.json"
+
+
+def _resolve_data_directory() -> Path:
+    if sys.platform == "win32":
+        base = Path(os.getenv("APPDATA", Path.home() / "AppData/Roaming"))
+    elif sys.platform == "darwin":
+        base = Path.home() / "Library/Application Support"
+    else:
+        base = Path(os.getenv("XDG_DATA_HOME", Path.home() / ".local/share"))
+    data_dir = base / "TableTennisRideShare"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    return data_dir
+
+
+APP_DATA_DIR = _resolve_data_directory()
+DATABASE_FILE = APP_DATA_DIR / "rideshare.db"
+SETTINGS_FILE = APP_DATA_DIR / "settings.json"
+
+
+def _prime_persistent_files() -> None:
+    if not SETTINGS_FILE.exists():
+        SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        if _BUNDLED_SETTINGS_FILE.exists():
+            shutil.copy2(_BUNDLED_SETTINGS_FILE, SETTINGS_FILE)
+    if not DATABASE_FILE.exists():
+        DATABASE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        if _BUNDLED_DATABASE_FILE.exists():
+            shutil.copy2(_BUNDLED_DATABASE_FILE, DATABASE_FILE)
+        else:
+            with sqlite3.connect(DATABASE_FILE) as connection:
+                connection.execute("PRAGMA journal_mode = WAL")
+
+
+_prime_persistent_files()
 
 
 def split_amount_evenly(amount: float, parts: int) -> list[float]:
