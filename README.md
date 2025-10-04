@@ -1,190 +1,112 @@
-# Project Template
+# Table Tennis RideShare Manager
 
-[![CI](https://github.com/ChubbyChuckles/project-template/actions/workflows/ci.yml/badge.svg)](https://github.com/ChubbyChuckles/project-template/actions/workflows/ci.yml)
-[![Docs](https://readthedocs.org/projects/project-template/badge/?version=latest)](https://project-template.readthedocs.io)
+An elegant PyQt6 desktop application that helps a table tennis team coordinate ride-sharing, calculate trip costs with real-world driving distances, and track outstanding balances between players. The interface embraces a modern palette of soft blues, crisp whites, and green accents, with rounded widgets, hover effects, and a responsive layout.
 
-This is a Python project template with automated setup for creating new projects, including a virtual environment, dependency installation, Sphinx documentation, and Git workflow with pre-commit checks.
+## ✨ Features
 
-## Setup Instructions
+- **Google Maps integration** – Autocomplete start and destination addresses with the Places API and fetch accurate driving distances via the Distance Matrix API.
+- **Ride cost calculator** – Combine flat driver fees with per-kilometre rates, split costs automatically across passengers, and handle validation edge cases gracefully.
+- **Team management** – Add, rename, and remove players with persistent storage in SQLite, complete with validation and helpful feedback.
+- **Ride history & ledger** – Review every saved trip, including passengers, costs, and the current balance of who owes whom.
+- **Polished UI** – Styled with Qt Style Sheets for a clean, professional look featuring rounded corners, gradient buttons, and Segoe UI typography.
 
-This template automates the setup of a new Python project. Follow these steps to initialize a new project after cloning or using this template.
+## 📦 Requirements
 
-### Prerequisites (Outside VS Code)
+- Python 3.10 or newer
+- Google Maps API key with **Places API** and **Distance Matrix API** enabled
+- Windows, macOS, or Linux desktop environment compatible with PyQt6
 
-Before starting, ensure the following are set up on your Windows 10 system:
+## 🚀 Quick Start
 
-1. **Install Git**:
+```powershell
+git clone https://github.com/ChubbyChuckles/CarsharingApplication.git
+cd CarsharingApplication
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
 
-   - Download and install Git for Windows from [https://git-scm.com/](https://git-scm.com/).
-   - Verify installation by running in Command Prompt or PowerShell:
-     ```powershell
-     git --version
-     ```
-   - Ensure Git is added to your system PATH (selected during installation).
+Create a `.env` file in the project root (same folder as `pyproject.toml`) and add your Google key:
 
-2. **Install Python**:
+```text
+GOOGLE_MAPS_API_KEY=your-google-maps-api-key
+```
 
-   - Ensure Python 3.12.3 or later is installed. Download from [https://www.python.org/](https://www.python.org/).
-   - Verify installation:
-     ```powershell
-     python --version
-     ```
-   - Ensure `pip` is available:
-     ```powershell
-     python -m pip --version
-     ```
+Launch the application:
 
-3. **Set PowerShell Execution Policy**:
+```powershell
+python -m src.main
+```
 
-   - To run PowerShell scripts like `scripts/commit-push.ps1`, set the execution policy to allow scripts:
-     ```powershell
-     Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
-     ```
-   - Run this in an elevated PowerShell prompt (right-click PowerShell and select "Run as administrator").
-   - If prompted, type `Y` to confirm.
+On first launch the database file `src/rideshare.db` is created automatically with the required tables.
 
-4. **Install Visual Studio Code (Optional but Recommended)**:
-   - Download and install VS Code from [https://code.visualstudio.com/](https://code.visualstudio.com/).
-   - Install the Python extension for VS Code (by Microsoft) for better Python support:
-     - Open VS Code, go to the Extensions view (`Ctrl+Shift+X`), search for "Python," and install the Microsoft Python extension.
+## 🧭 Using the App
 
-### Setup Steps
+### Team Management Tab
 
-1. **Clone the Repository or Create a New Project**:
+- Add new teammates with the **Save Team Member** button.
+- Select an existing row to rename or delete a member. Members attached to past rides cannot be removed (it keeps the ledger consistent).
 
-   - Clone this repository:
-     ```powershell
-     git clone https://github.com/ChubbyChuckles/project-template.git <new-project-name>
-     cd <new-project-name>
-     ```
-   - Alternatively, use the "Use this template" button on GitHub to create a new repository, then clone it:
-     ```powershell
-     git clone https://github.com/<your-username>/<your-new-repo>.git
-     cd <your-new-repo>
-     ```
+### Ride Setup Tab
 
-2. **Run the Bootstrap Script**:
+- Start typing addresses to receive Google-powered autocomplete suggestions.
+- Choose a driver and one or more passengers (the driver is automatically excluded from the passenger list).
+- Enter the driver’s flat fee and per-kilometre rate, then click **Calculate Ride Cost** to fetch the distance and compute the totals.
+- Click **Save Ride** to persist the trip; cost-per-passenger amounts are written to the ledger instantly.
 
-   - Run the `bootstrap.py` script to automate setup:
-     ```powershell
-     python bootstrap.py
-     ```
-   - Follow the prompts:
-     - **Enter the new project name** (e.g., `MyNewProject`).
-     - **Enter the new GitHub repository URL** (e.g., `https://github.com/ChubbyChuckles/my-new-project.git`).
-   - The script will:
-     - Create a virtual environment (`.venv`).
-     - Install dependencies from `requirements.txt` (e.g., `numpy`, `pandas`, `matplotlib`, `sphinx`, `pre-commit`).
-     - Create a `.env` file in the root directory with the project name and placeholder environment variables.
-     - Update `README.md`, `setup.py`, and `docs/source/conf.py` with the new project name and author.
-     - Initialize a Git repository (if needed) and set the new remote URL.
-     - Create and switch to a `develop` branch.
-     - Run `scripts/commit-push.ps1` to stage, commit, and push changes to the `develop` branch.
+### Ride History & Ledger Tab
 
-3. **Inside VS Code**:
-   - **Open the Project**:
-     - Launch VS Code and open the project folder:
-       ```powershell
-       code .
-       ```
-     - Alternatively, open VS Code, go to `File > Open Folder`, and select the project directory (e.g., `C:\Users\Chuck\Desktop\CR_AI_Engineering\Projekte\Github_Repo_Template\<new-project-name>`).
-   - **Select Python Interpreter**:
-     - Press `Ctrl+Shift+P` to open the Command Palette.
-     - Type `Python: Select Interpreter` and select the virtual environment (`.venv\Scripts\python.exe`).
-   - **Run `bootstrap.py` in VS Code** (if not run earlier):
-     - Open `bootstrap.py` in VS Code.
-     - Right-click the file and select `Run Python File in Terminal`, or use the integrated terminal:
-       ```powershell
-       python bootstrap.py
-       ```
-   - **Edit Configuration Files**:
-     - Update `docs/source/conf.py` for additional Sphinx settings (e.g., add custom modules for `autodoc`).
-     - Modify `README.md` or `setup.py` to add project-specific details.
-     - Use VS Code’s built-in Git integration (Source Control tab) to stage, commit, and push changes:
-       - Click the Source Control icon in the sidebar.
-       - Stage changes by clicking the `+` next to modified files.
-       - Enter a commit message and click the checkmark to commit.
-       - Click the `...` menu and select `Push` to push to the remote repository.
-   - **Generate Sphinx Documentation**:
-     - Open the integrated terminal in VS Code (`Ctrl+``).
-     - Run:
-       ```powershell
-       cd docs
-       .\make.bat html
-       ```
-     - Open `docs/build/html/index.html` in a browser to verify the documentation.
+- Review a chronological list of rides with distances, fees, and participants.
+- See a live ledger of outstanding amounts per passenger/driver pair.
 
-### Troubleshooting
+## 🛠 Architecture Overview
 
-- **Pre-Commit Hook Failures**:
+| Component                                             | Responsibility                                                                           |
+| ----------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `DatabaseManager`                                     | SQLite schema creation and CRUD for team members, rides, passengers, and ledger entries  |
+| `GoogleMapsHandler`                                   | Thin wrapper around the `googlemaps` client for autocomplete and distance calculation    |
+| `RideShareApp`                                        | Top-level `QMainWindow` hosting the tabbed interface                                     |
+| `TeamManagementTab`, `RideSetupTab`, `RideHistoryTab` | Feature-specific widgets with high-level business logic                                  |
+| `AddressLineEdit`                                     | Custom control that throttles autocomplete calls and feeds suggestions to a `QCompleter` |
+| `resources/style.qss`                                 | Central stylesheet defining the modern visual design                                     |
 
-  - If `scripts/commit-push.ps1` fails due to pre-commit hooks (e.g., `black`, `flake8`, `sphinx-build`), check the error output in the terminal.
-  - Ensure all dependencies are installed:
-    ```powershell
-    .\.venv\Scripts\Activate.ps1
-    pip install -r requirements.txt
-    ```
-  - Verify Sphinx files (`docs/Makefile`, `docs/make.bat`, `docs/source/conf.py`, `docs/source/index.rst`) exist.
-  - If issues persist, open `.pre-commit-config.yaml` in VS Code and check the `sphinx-build` hook configuration:
-    ```yaml
-    - repo: local
-      hooks:
-        - id: sphinx-build
-          name: Build Sphinx documentation
-          entry: make html
-          language: system
-          files: ^docs/
-    ```
+All persistent data lives in `src/rideshare.db`. The schema uses foreign keys to maintain referential integrity and cascades deletions where appropriate.
 
-- **Git Push Errors**:
+## 🔑 Google Maps API Configuration
 
-  - If `git push` fails, verify the GitHub URL and ensure you have push access.
-  - Use a personal access token if authentication fails:
-    ```powershell
-    git remote set-url origin https://<username>:<token>@github.com/<username>/<repo>.git
-    ```
-    Generate a token in GitHub: `Settings > Developer settings > Personal access tokens > Tokens (classic)`.
+1. Create a project in the [Google Cloud Console](https://console.cloud.google.com/).
+2. Enable the **Places API** and **Distance Matrix API**.
+3. Generate an API key and restrict it to the enabled APIs for security.
+4. Place the key in the `.env` file (or export `GOOGLE_MAPS_API_KEY` in your shell).
 
-- **Dependency Issues**:
+> ℹ️ The app exits gracefully with a helpful message if the key is missing or invalid.
 
-  - If `pip install -r requirements.txt` fails, check for conflicting versions in `requirements.txt`.
-  - Run in the VS Code terminal:
-    ```powershell
-    .\.venv\Scripts\Activate.ps1
-    pip install -r requirements.txt
-    ```
+## 🧪 Testing & Quality
 
-- **Virtual Environment Issues**:
+- Run the automated test suite:
 
-  - Ensure `.venv` is not ignored in `.gitignore`.
-  - If the virtual environment fails to activate, recreate it:
-    ```powershell
-    python -m venv .venv
-    .\.venv\Scripts\Activate.ps1
-    ```
-
-- **.env File Issues**:
-  - The `bootstrap.py` script creates a `.env` file with the project name and example variables.
-  - Edit `.env` in VS Code to add project-specific environment variables (e.g., API keys, database URLs).
-  - Do not commit sensitive data to `.env`. For production use, add `.env` to `.gitignore` after setup and use a `.env.example` file for templates.
-
-### Documentation
-
-- Documentation is built with Sphinx. To generate HTML documentation:
   ```powershell
-  cd docs
-  .\make.bat html
+  pytest
   ```
 
-## Repository Structure
+- Linting is configured via the tooling listed in `pyproject.toml`. Use your preferred formatter/linter before committing changes.
 
-- `bootstrap.py`: Automates project setup.
-- `requirements.txt`: Lists dependencies (e.g., `numpy`, `pandas`, `sphinx`, `pre-commit`).
-- `scripts/commit-push.ps1`: PowerShell script for staging, committing, and pushing changes.
-- `docs/`: Contains Sphinx files (`Makefile`, `make.bat`, `source/conf.py`, `source/index.rst`).
-- `.pre-commit-config.yaml`: Configures pre-commit hooks.
-- `setup.py`: Python package configuration.
-- `.env`: Template file for environment variables.
-- `README.md`: This file.
+## 📁 Project Structure (excerpt)
 
-For further customization, edit `setup.py`, `docs/source/conf.py`, `.env`, or add Python modules to the repository.
+```
+src/
+├── rideshare_app.py      # Main PyQt6 application with all GUI components
+├── main.py               # Entry point delegating to rideshare_app.bootstrap_app
+└── resources/
+    └── style.qss         # Centralised QSS stylesheet for the UI
+```
+
+## 🤝 Contributing
+
+1. Fork the repository and create a feature branch.
+2. Ensure the application runs without errors and all tests pass.
+3. Submit a pull request describing your changes and relevant screenshots where helpful.
+
+## 📄 License
+
+MIT License – see the [LICENSE](LICENSE) file for details.

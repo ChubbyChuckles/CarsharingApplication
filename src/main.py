@@ -1,10 +1,22 @@
 # src/main.py
-"""Main module for Project-Template."""
+"""Main entry point for the RideShare application."""
+
+import sys
+
+from PyQt6.QtWidgets import QApplication, QMessageBox
+
+from .rideshare_app import GoogleMapsError, bootstrap_app
 
 
 def main() -> None:
-    """Entry point for the project."""
-    print("Hello from project-template!")
+    """Launch the PyQt6 RideShare GUI."""
+    try:
+        exit_code = bootstrap_app()
+    except GoogleMapsError as exc:
+        app = QApplication.instance() or QApplication(sys.argv)
+        QMessageBox.critical(None, "Google Maps Configuration", str(exc))
+        raise SystemExit(1) from exc
+    raise SystemExit(exit_code)
 
 
 if __name__ == "__main__":
