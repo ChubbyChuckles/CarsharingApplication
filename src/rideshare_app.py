@@ -51,6 +51,7 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QCompleter,
     QDoubleSpinBox,
+    QFileDialog,
     QFormLayout,
     QGroupBox,
     QHeaderView,
@@ -70,6 +71,8 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from .utils.pdf_exporter import export_ledger_pdf
 
 
 APP_BUNDLE_ROOT = Path(__file__).resolve().parent
@@ -1431,6 +1434,7 @@ class RideHistoryTab(QWidget):
     def __init__(self, db_manager: DatabaseManager, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.db_manager = db_manager
+        self._ledger_entries: list[dict[str, Any]] = []
 
         self.rides_table = QTableWidget(0, 9)
         self.rides_table.setHorizontalHeaderLabels(
@@ -1490,6 +1494,13 @@ class RideHistoryTab(QWidget):
         layout.addWidget(self.rides_table)
         layout.addWidget(QLabel("Net Ledger (All Rides)"))
         layout.addWidget(self.ledger_table)
+        button_bar = QHBoxLayout()
+        button_bar.addStretch()
+        self.export_button = QPushButton("Export Ledger to PDF")
+        self.export_button.setEnabled(False)
+        self.export_button.clicked.connect(self._on_export_ledger)
+        button_bar.addWidget(self.export_button)
+        layout.addLayout(button_bar)
         layout.addStretch(1)
 
     def refresh(self) -> None:
@@ -1518,12 +1529,49 @@ class RideHistoryTab(QWidget):
         self._update_delete_button_state()
 
         ledger_entries = self.db_manager.fetch_ledger_summary()
+        self._ledger_entries = ledger_entries
+        self.export_button.setEnabled(bool(ledger_entries))
         self.ledger_table.setRowCount(len(ledger_entries))
         for row_idx, entry in enumerate(ledger_entries):
             self._set_table_item(self.ledger_table, row_idx, 0, entry["owes_name"])
             self._set_table_item(self.ledger_table, row_idx, 1, entry["owed_name"])
             self._set_table_item(self.ledger_table, row_idx, 2, f"€{entry['amount']:.2f}")
         self.ledger_table.resizeRowsToContents()
+
+    def _on_export_ledger(self) -> None:
+        if not self._ledger_entries:
+            QMessageBox.information(
+                self,
+                "Nothing to Export",
+                "There are no ledger entries to export right now.",
+            )
+            return
+
+        default_name = f"rideshare_ledger_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf"
+        file_name, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Ledger to PDF",
+            str(Path.home() / default_name),
+            "PDF Files (*.pdf)",
+        )
+        if not file_name:
+            return
+
+        try:
+            result_path = export_ledger_pdf(file_name, self._ledger_entries)
+        except Exception as exc:  # pylint: disable=broad-except
+            QMessageBox.critical(
+                self,
+                "Export Failed",
+                f"The ledger could not be exported.\n\nDetails: {exc}",
+            )
+            return
+
+        QMessageBox.information(
+            self,
+            "Export Complete",
+            f"Ledger exported successfully to:\n{result_path}",
+        )
 
     def _selected_ride_id(self) -> Optional[int]:
         row = self.rides_table.currentRow()

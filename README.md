@@ -61,6 +61,8 @@ Check the `dist/` directory for the generated `.msi` (for example, `TableTennisR
 
 All user-modifiable data (the SQLite database and `settings.json`) now live in `%APPDATA%\TableTennisRideShare` to avoid permission issues under `Program Files`.
 
+> The repository also includes an automated **Build and Publish MSI** GitHub Action (`.github/workflows/release-msi.yml`) that you can trigger manually or during a release to attach the installer to the GitHub release artifacts.
+
 ## 🧭 Using the App
 
 - The interface now uses a frameless dark chrome with built-in minimize, maximize/restore, and close controls; you can drag the custom title bar or the window edges to reposition or resize it.
@@ -84,6 +86,7 @@ All user-modifiable data (the SQLite database and `settings.json`) now live in `
 - Review a trimmed list of the three most recent rides with distances, fees, and participants, including every driver on multi-car trips. Older rides remain in the database and can still influence the ledger.
 - Use the **Delete Selected Ride** button to remove an entry (and its associated ledger rows) if it was created in error.
 - Inspect the live ledger, which now collapses all historical rides into net balances so you instantly see who ultimately owes whom (and by how much) across the entire season.
+- Export the current ledger to a polished PDF with the **Export Ledger to PDF** button—perfect for sharing balances with the team.
 
 ## 🛠 Architecture Overview
 

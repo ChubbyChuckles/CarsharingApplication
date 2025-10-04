@@ -17,6 +17,7 @@ dependencies = [
     "PyQt6",
     "googlemaps",
     "python-dotenv",
+    "reportlab",
 ]
 
 [project.optional-dependencies]

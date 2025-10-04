@@ -16,6 +16,7 @@ packaging==25.0
 PyQt6==6.7.1
 PyQt6-Qt6==6.7.3
 PyQt6-sip==13.8.0
+reportlab==4.1.0
 googlemaps==4.10.0
 pefile==2023.2.7
 pluggy==1.6.0
