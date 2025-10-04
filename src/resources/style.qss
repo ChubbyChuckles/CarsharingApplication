@@ -1,21 +1,28 @@
 /*
- * Modern QSS stylesheet for the RideShare application.
- * Colors: soft blues, whites, green accents.
+ * Dark, modern QSS stylesheet for the RideShare application.
+ * Palette: deep navy backgrounds with teal highlights and soft neutrals.
  */
 
 QMainWindow {
-    background-color: #f4f8fb;
+    background-color: #0f1724;
+    color: #edf2fb;
+}
+
+QWidget {
+    color: #edf2fb;
+    font-family: "Segoe UI";
+    font-size: 10pt;
 }
 
 QTabWidget::pane {
-    border: 1px solid #d0e3f0;
+    border: 1px solid #1f2d3d;
     border-radius: 12px;
-    background-color: #ffffff;
+    background-color: #152133;
 }
 
 QTabBar::tab {
-    background: #e3eff8;
-    color: #1f3b4d;
+    background: #1c2940;
+    color: #d6e3f5;
     padding: 10px 20px;
     border-top-left-radius: 12px;
     border-top-right-radius: 12px;
@@ -25,13 +32,13 @@ QTabBar::tab {
 
 QTabBar::tab:selected {
     background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                                stop:0 #66c2a5, stop:1 #4d9fcd);
+                                stop:0 #1ba2a4, stop:1 #3f6bcc);
     color: #ffffff;
 }
 
 QPushButton {
     background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                                stop:0 #66c2a5, stop:1 #4d9fcd);
+                                stop:0 #1ba2a4, stop:1 #3f6bcc);
     color: #ffffff;
     border: none;
     border-radius: 10px;
@@ -42,26 +49,26 @@ QPushButton {
 
 QPushButton:hover {
     background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                                stop:0 #78ceb5, stop:1 #63aad6);
+                                stop:0 #28b3b5, stop:1 #4a7de8);
 }
 
 QPushButton:disabled {
-    background: #c0d8e6;
-    color: #ffffff;
+    background: #2a3a52;
+    color: #8ea0bc;
 }
 
 QLineEdit, QComboBox, QTextEdit, QSpinBox, QDoubleSpinBox, QListWidget, QTableWidget {
-    background-color: #ffffff;
-    border: 1px solid #c9dbe8;
+    background-color: #1a2739;
+    border: 1px solid #2b3b52;
     border-radius: 10px;
     padding: 6px 10px;
-    color: #1f3b4d;
-    selection-background-color: #66c2a5;
+    color: #edf2fb;
+    selection-background-color: #1ba2a4;
     selection-color: #ffffff;
 }
 
 QLineEdit:focus, QComboBox:focus, QTextEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus {
-    border: 1px solid #66c2a5;
+    border: 1px solid #35c4c7;
 }
 
 QListWidget::item {
@@ -69,19 +76,19 @@ QListWidget::item {
 }
 
 QListWidget::item:selected {
-    background: #66c2a5;
+    background: #1ba2a4;
     color: #ffffff;
     border-radius: 8px;
 }
 
 QTableWidget {
-    gridline-color: #d0e3f0;
-    alternate-background-color: #f1f7fb;
+    gridline-color: #26354a;
+    alternate-background-color: #1d2a3d;
 }
 
 QHeaderView::section {
-    background-color: #e3eff8;
-    color: #1f3b4d;
+    background-color: #1c2940;
+    color: #d6e3f5;
     padding: 8px;
     border: none;
     border-top-left-radius: 10px;
@@ -90,43 +97,43 @@ QHeaderView::section {
 
 QScrollBar:vertical {
     border: none;
-    background: #e3eff8;
+    background: #1c2940;
     width: 12px;
     margin: 12px 0 12px 0;
     border-radius: 6px;
 }
 
 QScrollBar::handle:vertical {
-    background: #66c2a5;
+    background: #35c4c7;
     min-height: 20px;
     border-radius: 6px;
 }
 
 QScrollBar:horizontal {
     border: none;
-    background: #e3eff8;
+    background: #1c2940;
     height: 12px;
     margin: 0 12px 0 12px;
     border-radius: 6px;
 }
 
 QScrollBar::handle:horizontal {
-    background: #66c2a5;
+    background: #35c4c7;
     min-width: 20px;
     border-radius: 6px;
 }
 
 QGroupBox {
-    border: 1px solid #d0e3f0;
+    border: 1px solid #2b3b52;
     border-radius: 12px;
     margin-top: 18px;
-    background-color: #ffffff;
+    background-color: #162233;
 }
 
 QGroupBox::title {
     subcontrol-origin: margin;
     left: 20px;
     padding: 0 6px 0 6px;
-    color: #1f3b4d;
+    color: #f7fafc;
     font-weight: 600;
 }

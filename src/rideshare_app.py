@@ -170,6 +170,7 @@ class DatabaseManager:
         CREATE TABLE IF NOT EXISTS team_members (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL UNIQUE,
+            is_core INTEGER NOT NULL DEFAULT 1,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
 
@@ -209,21 +210,31 @@ class DatabaseManager:
         with self._connect() as conn:
             conn.executescript(schema)
 
+            # Apply lightweight migration for existing databases that pre-date the
+            # ``is_core`` flag. ``ALTER TABLE`` will raise an operational error if the
+            # column already exists, so we only run it when required.
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(team_members)")}
+            if "is_core" not in columns:
+                conn.execute(
+                    "ALTER TABLE team_members ADD COLUMN is_core INTEGER NOT NULL DEFAULT 1"
+                )
+            conn.commit()
+
     # Team management -----------------------------------------------------
-    def add_team_member(self, name: str) -> int:
+    def add_team_member(self, name: str, is_core: bool) -> int:
         with self._connect() as conn:
             cursor = conn.execute(
-                "INSERT INTO team_members (name) VALUES (?)",
-                (name.strip(),),
+                "INSERT INTO team_members (name, is_core) VALUES (?, ?)",
+                (name.strip(), int(is_core)),
             )
             conn.commit()
             return int(cursor.lastrowid)
 
-    def update_team_member(self, member_id: int, new_name: str) -> None:
+    def update_team_member(self, member_id: int, new_name: str, is_core: bool) -> None:
         with self._connect() as conn:
             conn.execute(
-                "UPDATE team_members SET name = ? WHERE id = ?",
-                (new_name.strip(), member_id),
+                "UPDATE team_members SET name = ?, is_core = ? WHERE id = ?",
+                (new_name.strip(), int(is_core), member_id),
             )
             conn.commit()
 
@@ -235,7 +246,7 @@ class DatabaseManager:
     def fetch_team_members(self) -> List[dict[str, Any]]:
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT id, name FROM team_members ORDER BY name COLLATE NOCASE"
+                "SELECT id, name, is_core FROM team_members ORDER BY name COLLATE NOCASE"
             ).fetchall()
         return [dict(row) for row in rows]
 
@@ -247,12 +258,14 @@ class DatabaseManager:
         distance_km: float,
         driver_id: int,
         passenger_ids: Iterable[int],
+        paying_passenger_ids: Iterable[int],
         flat_fee: float,
         fee_per_km: float,
         total_cost: float,
         cost_per_passenger: float,
     ) -> int:
         passenger_ids = list(passenger_ids)
+        paying_passenger_ids = list(paying_passenger_ids)
         timestamp = datetime.utcnow().isoformat(timespec="seconds")
         with self._connect() as conn:
             cursor = conn.execute(
@@ -288,6 +301,7 @@ class DatabaseManager:
                     "INSERT INTO ride_passengers (ride_id, passenger_id) VALUES (?, ?)",
                     (ride_id, passenger_id),
                 )
+            for passenger_id in paying_passenger_ids:
                 conn.execute(
                     """
                     INSERT INTO ledger_entries (ride_id, driver_id, passenger_id, amount)
@@ -312,7 +326,7 @@ class DatabaseManager:
             for row in ride_rows:
                 passenger_rows = conn.execute(
                     """
-                    SELECT tm.name
+                    SELECT tm.name, tm.is_core
                     FROM ride_passengers rp
                     JOIN team_members tm ON rp.passenger_id = tm.id
                     WHERE rp.ride_id = ?
@@ -331,7 +345,10 @@ class DatabaseManager:
                         "total_cost": row["total_cost"],
                         "cost_per_passenger": row["cost_per_passenger"],
                         "ride_datetime": row["ride_datetime"],
-                        "passengers": [p["name"] for p in passenger_rows],
+                        "passengers": [
+                            f"{p['name']} ({'Core' if p['is_core'] else 'Reserve'})"
+                            for p in passenger_rows
+                        ],
                         "driver_name": row["driver_name"],
                     }
                 )
@@ -361,6 +378,7 @@ class TeamMember:
 
     member_id: int
     name: str
+    is_core: bool
 
 
 class AddressLineEdit(QLineEdit):
@@ -427,16 +445,23 @@ class TeamManagementTab(QWidget):
         self.name_input = QLineEdit()
         self.name_input.setPlaceholderText("Team member name")
 
+        self.member_type_combo = QComboBox()
+        self.member_type_combo.addItem("Core Member", True)
+        self.member_type_combo.addItem("Reserve Player", False)
+        self._set_type_combo(True)
+
         self.add_button = QPushButton("Save Team Member")
         self.update_button = QPushButton("Update Selected")
         self.delete_button = QPushButton("Delete Selected")
 
-        self.table = QTableWidget(0, 1)
-        self.table.setHorizontalHeaderLabels(["Name"])
+        self.table = QTableWidget(0, 2)
+        self.table.setHorizontalHeaderLabels(["Name", "Type"])
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
 
         self._build_layout()
         self._wire_signals()
@@ -449,6 +474,7 @@ class TeamManagementTab(QWidget):
 
         name_row = QFormLayout()
         name_row.addRow("Name", self.name_input)
+        name_row.addRow("Role", self.member_type_combo)
         form_layout.addLayout(name_row)
 
         buttons_layout = QHBoxLayout()
@@ -472,14 +498,22 @@ class TeamManagementTab(QWidget):
 
     def refresh_members(self) -> None:
         members = [
-            TeamMember(member_id=row["id"], name=row["name"])
+            TeamMember(member_id=row["id"], name=row["name"], is_core=bool(row["is_core"]))
             for row in self.db_manager.fetch_team_members()
         ]
         self.table.setRowCount(len(members))
         for row_index, member in enumerate(members):
-            cell = QTableWidgetItem(member.name)
-            cell.setData(Qt.ItemDataRole.UserRole, member.member_id)
-            self.table.setItem(row_index, 0, cell)
+            name_item = QTableWidgetItem(member.name)
+            name_item.setData(Qt.ItemDataRole.UserRole, member.member_id)
+            name_item.setData(Qt.ItemDataRole.UserRole + 1, member.is_core)
+            name_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+
+            type_label = "Core" if member.is_core else "Reserve"
+            type_item = QTableWidgetItem(type_label)
+            type_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+
+            self.table.setItem(row_index, 0, name_item)
+            self.table.setItem(row_index, 1, type_item)
         self.table.resizeRowsToContents()
         self.members_changed.emit(members)
 
@@ -496,7 +530,7 @@ class TeamManagementTab(QWidget):
         if not name:
             return
         try:
-            self.db_manager.add_team_member(name)
+            self.db_manager.add_team_member(name, self._selected_type())
         except sqlite3.IntegrityError:
             QMessageBox.warning(
                 self,
@@ -505,7 +539,10 @@ class TeamManagementTab(QWidget):
             )
             return
         self.name_input.clear()
+        self._set_type_combo(True)
+        self._selected_member = None
         self.refresh_members()
+        self.table.clearSelection()
 
     def _on_update_member(self) -> None:
         name = self._validate_name()
@@ -517,7 +554,9 @@ class TeamManagementTab(QWidget):
             )
             return
         try:
-            self.db_manager.update_team_member(self._selected_member.member_id, name)
+            self.db_manager.update_team_member(
+                self._selected_member.member_id, name, self._selected_type()
+            )
         except sqlite3.IntegrityError:
             QMessageBox.warning(
                 self,
@@ -526,7 +565,10 @@ class TeamManagementTab(QWidget):
             )
             return
         self.name_input.clear()
+        self._set_type_combo(True)
+        self._selected_member = None
         self.refresh_members()
+        self.table.clearSelection()
 
     def _on_delete_member(self) -> None:
         if self._selected_member is None:
@@ -554,18 +596,35 @@ class TeamManagementTab(QWidget):
             return
         self._selected_member = None
         self.name_input.clear()
+        self._set_type_combo(True)
         self.refresh_members()
+        self.table.clearSelection()
 
     def _on_table_selection_changed(self) -> None:
         items = self.table.selectedItems()
         if not items:
             self._selected_member = None
+            self._set_type_combo(True)
             return
         item = items[0]
         member_id = int(item.data(Qt.ItemDataRole.UserRole))
         name = item.text()
-        self._selected_member = TeamMember(member_id, name)
+        is_core = bool(item.data(Qt.ItemDataRole.UserRole + 1))
+        self._selected_member = TeamMember(member_id, name, is_core)
         self.name_input.setText(name)
+        self._set_type_combo(is_core)
+
+    def _selected_type(self) -> bool:
+        data = self.member_type_combo.currentData(Qt.ItemDataRole.UserRole)
+        if data is None:
+            return True
+        return bool(data)
+
+    def _set_type_combo(self, is_core: bool) -> None:
+        for index in range(self.member_type_combo.count()):
+            if bool(self.member_type_combo.itemData(index, Qt.ItemDataRole.UserRole)) == is_core:
+                self.member_type_combo.setCurrentIndex(index)
+                break
 
 
 class RideSetupTab(QWidget):
@@ -585,6 +644,7 @@ class RideSetupTab(QWidget):
         self.maps_handler = maps_handler
         self.thread_pool = thread_pool
         self.members: list[TeamMember] = []
+        self.member_lookup: dict[int, TeamMember] = {}
 
         self.start_input = AddressLineEdit(self.maps_handler, self.thread_pool)
         self.dest_input = AddressLineEdit(self.maps_handler, self.thread_pool)
@@ -597,14 +657,14 @@ class RideSetupTab(QWidget):
 
         self.flat_fee_input = QDoubleSpinBox()
         self.flat_fee_input.setRange(0, 10000)
-        self.flat_fee_input.setPrefix("$")
+        self.flat_fee_input.setPrefix("€ ")
         self.flat_fee_input.setDecimals(2)
         self.flat_fee_input.setSingleStep(0.5)
         self.flat_fee_input.setValue(5.0)
 
         self.per_km_input = QDoubleSpinBox()
         self.per_km_input.setRange(0, 500)
-        self.per_km_input.setPrefix("$")
+        self.per_km_input.setPrefix("€ ")
         self.per_km_input.setSuffix(" / km")
         self.per_km_input.setDecimals(2)
         self.per_km_input.setSingleStep(0.1)
@@ -621,6 +681,8 @@ class RideSetupTab(QWidget):
         self._current_distance: Optional[float] = None
         self._current_total_cost: Optional[float] = None
         self._current_cost_per_passenger: Optional[float] = None
+        self._current_paying_passenger_ids: list[int] = []
+        self._current_all_passenger_ids: list[int] = []
 
         self._build_layout()
         self._wire_signals()
@@ -662,20 +724,27 @@ class RideSetupTab(QWidget):
         self.calculate_button.clicked.connect(self._on_calculate_clicked)
         self.save_button.clicked.connect(self._on_save_clicked)
         self.driver_combo.currentIndexChanged.connect(self._remove_driver_from_passengers)
+        self.passenger_list.itemSelectionChanged.connect(self._invalidate_calculation)
+        self.flat_fee_input.valueChanged.connect(self._invalidate_calculation)
+        self.per_km_input.valueChanged.connect(self._invalidate_calculation)
+        self.start_input.textChanged.connect(self._invalidate_calculation)
+        self.dest_input.textChanged.connect(self._invalidate_calculation)
 
     # Public API ----------------------------------------------------------
     def set_team_members(self, members: list[TeamMember]) -> None:
         self.members = members
+        self.member_lookup = {member.member_id: member for member in members}
         self.driver_combo.clear()
         for member in members:
-            self.driver_combo.addItem(member.name, member.member_id)
+            self.driver_combo.addItem(self._format_member(member), member.member_id)
 
         self.passenger_list.clear()
         for member in members:
-            item = QListWidgetItem(member.name)
+            item = QListWidgetItem(self._format_member(member))
             item.setData(Qt.ItemDataRole.UserRole, member.member_id)
             self.passenger_list.addItem(item)
         self._remove_driver_from_passengers()
+        self._invalidate_calculation()
 
     # Helper properties ---------------------------------------------------
     def _selected_driver_id(self) -> Optional[int]:
@@ -689,6 +758,14 @@ class RideSetupTab(QWidget):
             int(item.data(Qt.ItemDataRole.UserRole)) for item in self.passenger_list.selectedItems()
         ]
 
+    def _format_member(self, member: TeamMember) -> str:
+        role = "Core" if member.is_core else "Reserve"
+        return f"{member.name} ({role})"
+
+    def _is_core_member(self, member_id: int) -> bool:
+        member = self.member_lookup.get(member_id)
+        return bool(member and member.is_core)
+
     def _remove_driver_from_passengers(self) -> None:
         driver_id = self._selected_driver_id()
         if driver_id is None:
@@ -697,6 +774,7 @@ class RideSetupTab(QWidget):
             item = self.passenger_list.item(index)
             if int(item.data(Qt.ItemDataRole.UserRole)) == driver_id:
                 item.setSelected(False)
+        self._invalidate_calculation()
 
     # Event handlers ------------------------------------------------------
     def _on_api_error(self, message: str) -> None:
@@ -707,6 +785,7 @@ class RideSetupTab(QWidget):
         destination_address = self.dest_input.text().strip()
         driver_id = self._selected_driver_id()
         passenger_ids = self._selected_passenger_ids()
+        core_passenger_ids = [pid for pid in passenger_ids if self._is_core_member(pid)]
         flat_fee = float(self.flat_fee_input.value())
         per_km_fee = float(self.per_km_input.value())
 
@@ -733,6 +812,13 @@ class RideSetupTab(QWidget):
                 "Both the flat fee and per-kilometre fee must be positive values.",
             )
             return
+        if not core_passenger_ids:
+            QMessageBox.warning(
+                self,
+                "No Core Members",
+                "Select at least one core team member as a passenger to share the ride cost.",
+            )
+            return
 
         self.calculate_button.setEnabled(False)
         worker = Worker(self.maps_handler.distance_km, start_address, destination_address)
@@ -742,6 +828,7 @@ class RideSetupTab(QWidget):
                 flat_fee,
                 per_km_fee,
                 passenger_ids,
+                core_passenger_ids,
             )
         )
         worker.signals.error.connect(self._on_calculate_error)
@@ -753,17 +840,23 @@ class RideSetupTab(QWidget):
         flat_fee: float,
         per_km_fee: float,
         passenger_ids: list[int],
+        core_passenger_ids: list[int],
     ) -> None:
         self.calculate_button.setEnabled(True)
-        self._current_distance = distance_km
-        total_cost = round(flat_fee + distance_km * per_km_fee, 2)
-        cost_per_passenger = round(total_cost / len(passenger_ids), 2)
+        round_trip_distance = round(distance_km * 2, 2)
+        self._current_distance = round_trip_distance
+        total_cost = round(flat_fee + round_trip_distance * per_km_fee, 2)
+        cost_per_passenger = round(total_cost / len(core_passenger_ids), 2)
         self._current_total_cost = total_cost
         self._current_cost_per_passenger = cost_per_passenger
+        self._current_paying_passenger_ids = core_passenger_ids
+        self._current_all_passenger_ids = passenger_ids
 
-        self.distance_value.setText(f"{distance_km:.2f} km")
-        self.total_cost_value.setText(f"{total_cost:.2f}")
-        self.cost_per_passenger_value.setText(f"{cost_per_passenger:.2f}")
+        self.distance_value.setText(f"{round_trip_distance:.2f} km")
+        self.total_cost_value.setText(f"€{total_cost:.2f}")
+        self.cost_per_passenger_value.setText(
+            f"€{cost_per_passenger:.2f} per core member ({len(core_passenger_ids)} total)"
+        )
         self.save_button.setEnabled(True)
 
     def _on_calculate_error(self, message: str) -> None:
@@ -782,6 +875,7 @@ class RideSetupTab(QWidget):
         destination_address = self.dest_input.text().strip()
         driver_id = self._selected_driver_id()
         passenger_ids = self._selected_passenger_ids()
+        core_passenger_ids = [pid for pid in passenger_ids if self._is_core_member(pid)]
 
         if driver_id is None or not passenger_ids:
             QMessageBox.warning(
@@ -790,9 +884,28 @@ class RideSetupTab(QWidget):
                 "Please ensure a driver and at least one passenger are selected.",
             )
             return
+        if not core_passenger_ids:
+            QMessageBox.warning(
+                self,
+                "No Core Members",
+                "Select at least one core team member as a passenger to share the ride cost.",
+            )
+            return
 
         flat_fee = float(self.flat_fee_input.value())
         per_km_fee = float(self.per_km_input.value())
+
+        total_cost = self._current_total_cost
+        if total_cost is None:
+            QMessageBox.information(
+                self,
+                "Calculate First",
+                "Please calculate the ride cost before saving.",
+            )
+            return
+
+        cost_per_passenger = round(total_cost / len(core_passenger_ids), 2)
+        self._current_cost_per_passenger = cost_per_passenger
 
         try:
             self.db_manager.record_ride(
@@ -801,10 +914,11 @@ class RideSetupTab(QWidget):
                 distance_km=self._current_distance,
                 driver_id=driver_id,
                 passenger_ids=passenger_ids,
+                paying_passenger_ids=core_passenger_ids,
                 flat_fee=flat_fee,
                 fee_per_km=per_km_fee,
-                total_cost=self._current_total_cost,
-                cost_per_passenger=self._current_cost_per_passenger,
+                total_cost=total_cost,
+                cost_per_passenger=cost_per_passenger,
             )
         except sqlite3.DatabaseError as exc:
             QMessageBox.critical(
@@ -822,8 +936,8 @@ class RideSetupTab(QWidget):
         self.start_input.clear()
         self.dest_input.clear()
         self.passenger_list.clearSelection()
-        self.flat_fee_input.setValue(0.0)
-        self.per_km_input.setValue(0.0)
+        self.flat_fee_input.setValue(5.0)
+        self.per_km_input.setValue(0.5)
         self.distance_value.setText("—")
         self.total_cost_value.setText("—")
         self.cost_per_passenger_value.setText("—")
@@ -831,6 +945,19 @@ class RideSetupTab(QWidget):
         self._current_distance = None
         self._current_total_cost = None
         self._current_cost_per_passenger = None
+        self._current_paying_passenger_ids = []
+        self._current_all_passenger_ids = []
+
+    def _invalidate_calculation(self) -> None:
+        self.save_button.setEnabled(False)
+        self._current_distance = None
+        self._current_total_cost = None
+        self._current_cost_per_passenger = None
+        self._current_paying_passenger_ids = []
+        self._current_all_passenger_ids = []
+        self.distance_value.setText("—")
+        self.total_cost_value.setText("—")
+        self.cost_per_passenger_value.setText("—")
 
 
 class RideHistoryTab(QWidget):
@@ -888,9 +1015,9 @@ class RideHistoryTab(QWidget):
             self._set_table_item(self.rides_table, row_idx, 3, ride["start_address"])
             self._set_table_item(self.rides_table, row_idx, 4, ride["destination_address"])
             self._set_table_item(self.rides_table, row_idx, 5, f"{ride['distance_km']:.2f}")
-            self._set_table_item(self.rides_table, row_idx, 6, f"{ride['flat_fee']:.2f}")
-            self._set_table_item(self.rides_table, row_idx, 7, f"{ride['fee_per_km']:.2f}")
-            self._set_table_item(self.rides_table, row_idx, 8, f"{ride['total_cost']:.2f}")
+            self._set_table_item(self.rides_table, row_idx, 6, f"€{ride['flat_fee']:.2f}")
+            self._set_table_item(self.rides_table, row_idx, 7, f"€{ride['fee_per_km']:.2f}")
+            self._set_table_item(self.rides_table, row_idx, 8, f"€{ride['total_cost']:.2f}")
         self.rides_table.resizeRowsToContents()
 
         ledger_entries = self.db_manager.fetch_ledger_summary()
@@ -898,7 +1025,7 @@ class RideHistoryTab(QWidget):
         for row_idx, entry in enumerate(ledger_entries):
             self._set_table_item(self.ledger_table, row_idx, 0, entry["passenger_name"])
             self._set_table_item(self.ledger_table, row_idx, 1, entry["driver_name"])
-            self._set_table_item(self.ledger_table, row_idx, 2, f"{entry['amount_owed']:.2f}")
+            self._set_table_item(self.ledger_table, row_idx, 2, f"€{entry['amount_owed']:.2f}")
         self.ledger_table.resizeRowsToContents()
 
     @staticmethod
@@ -947,7 +1074,11 @@ class RideShareApp(QMainWindow):
 
     def _initialise_state(self) -> None:
         members = [
-            TeamMember(member_id=row["id"], name=row["name"])
+            TeamMember(
+                member_id=row["id"],
+                name=row["name"],
+                is_core=bool(row["is_core"]),
+            )
             for row in self.db_manager.fetch_team_members()
         ]
         self.ride_tab.set_team_members(members)

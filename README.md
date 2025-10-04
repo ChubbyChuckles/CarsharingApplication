@@ -44,15 +44,16 @@ On first launch the database file `src/rideshare.db` is created automatically wi
 
 ### Team Management Tab
 
-- Add new teammates with the **Save Team Member** button.
-- Select an existing row to rename or delete a member. Members attached to past rides cannot be removed (it keeps the ledger consistent).
+- Add new teammates with the **Save Team Member** button and mark them as either **Core** or **Reserve** players.
+- Select an existing row to rename, promote/demote between core and reserve, or delete a member. Members attached to past rides cannot be removed (it keeps the ledger consistent).
 
 ### Ride Setup Tab
 
 - Start typing addresses to receive Google-powered autocomplete suggestions.
 - Choose a driver and one or more passengers (the driver is automatically excluded from the passenger list).
-- Enter the driver’s flat fee and per-kilometre rate, then click **Calculate Ride Cost** to fetch the distance and compute the totals.
-- Click **Save Ride** to persist the trip; cost-per-passenger amounts are written to the ledger instantly.
+- Enter the driver’s flat fee (in euros) and per-kilometre rate. The app doubles the Google Maps driving distance to account for the return trip before calculating totals.
+- Click **Calculate Ride Cost** to see the round-trip distance, total cost, and the amount owed per core team member. Reserve players are listed but never charged.
+- Click **Save Ride** to persist the trip; only core passengers are written to the ledger and debts are recorded in euros.
 
 ### Ride History & Ledger Tab
 
