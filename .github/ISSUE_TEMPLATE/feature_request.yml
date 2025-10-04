@@ -1,0 +1,72 @@
+name: Feature Request
+description: Suggest a new feature or enhancement for the project-template project
+title: "[FEATURE]: "
+labels: ["enhancement"]
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for suggesting a feature for the Categorical-Trading project. To help us evaluate and implement your idea effectively, please provide a detailed description of the proposed feature, its use case, and any relevant context. Refer to CONTRIBUTING.md for project standards and contribution guidelines.
+  - type: textarea
+    id: feature-description
+    attributes:
+      label: Feature Description
+      description: Provide a clear and detailed description of the proposed feature or enhancement, including its purpose and how it would benefit the project.
+      placeholder: |
+        Example: Add a new script `deploy-app.ps1` to automate deployment to a cloud platform (e.g., AWS) with support for custom configuration files.
+    validations:
+      required: true
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Use Case
+      description: Describe the problem this feature solves or the scenario where it would be used, including who would benefit (e.g., developers, end-users).
+      placeholder: |
+        Example: As a developer, I want to automate cloud deployment to reduce manual steps and ensure consistency across environments.
+    validations:
+      required: true
+  - type: textarea
+    id: proposed-solution
+    attributes:
+      label: Proposed Solution
+      description: Suggest how the feature could be implemented, including any technical details, code snippets, or configuration changes. If applicable, reference existing project tools (e.g., pre-commit, pytest).
+      placeholder: |
+        Example: Create a PowerShell script `deploy-app.ps1` that:
+        1. Reads a `config.yaml` for deployment settings (e.g., AWS region, credentials).
+        2. Integrates with pre-commit hooks to validate configuration before deployment.
+        3. Uses boto3 (version >= 1.34.0) for AWS interactions.
+    validations:
+      required: false
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternative Solutions
+      description: Describe any alternative approaches or workarounds you considered, and why they are less ideal than the proposed feature.
+      placeholder: |
+        Example: Manually deploying via AWS CLI works but is error-prone and lacks automation. Using a third-party tool like Terraform was considered, but it adds complexity for simple deployments.
+    validations:
+      required: false
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional Context
+      description: Provide any additional information, such as related features, existing issues, or external references, that might help evaluate the request.
+      placeholder: |
+        Example: This feature aligns with issue #123 for improving automation. I referenced the AWS SDK documentation (https://boto3.amazonaws.com/v1/documentation/api/latest/index.html) for implementation details.
+    validations:
+      required: false
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      description: Confirm that you have completed the following steps before submitting this feature request.
+      options:
+        - label: I have read CONTRIBUTING.md and understand the project's contribution guidelines.
+          required: true
+        - label: I have searched existing issues and feature requests to ensure this has not already been proposed.
+          required: true
+        - label: I have provided a clear use case and explained the feature's benefits.
+          required: true
+        - label: I have considered alternative solutions or workarounds and included them if applicable.
+          required: false

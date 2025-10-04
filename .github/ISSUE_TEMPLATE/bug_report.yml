@@ -1,0 +1,102 @@
+name: Bug Report
+description: Report a bug or unexpected behavior in the project-template project
+title: "[BUG]: "
+labels: ["bug"]
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting a bug in the Categorical-Trading project. To help us diagnose and resolve the issue efficiently, please provide as much detail as possible, including steps to reproduce, environment details, and any relevant logs or error messages. Refer to `CONTRIBUTING.md` for project standards and setup instructions.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug Description
+      description: Provide a clear and detailed description of the bug, including what you observed and any error messages or unexpected behavior.
+      placeholder: |
+        Example: When running `commit-push.ps1`, the `pylint` hook fails with `F0001: No module named F0401`. The error persists despite updating `.pre-commit-config.yaml`.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to Reproduce
+      description: List the exact steps to replicate the issue, including commands, code snippets, or configuration changes.
+      placeholder: |
+        1. Clone the repository: `git clone https://github.com/ChubbyChuckles/project-template.git`
+        2. Set up the environment: `python -m venv .venv; .venv\Scripts\Activate.ps1; pip install -r requirements.txt`
+        3. Run `.\scripts\commit-push.ps1`
+        4. Observe the error in the `pylint` hook output.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected-behavior
+    attributes:
+      label: Expected Behavior
+      description: Describe what you expected to happen instead of the observed bug.
+      placeholder: |
+        Example: The `pylint` hook should pass without errors, allowing `commit-push.ps1` to complete successfully.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual-behavior
+    attributes:
+      label: Actual Behavior
+      description: Describe what actually happened, including any error messages, logs, or screenshots. If applicable, include the contents of `pre-commit.log` or specific tool outputs (e.g., `mypy`, `pylint`).
+      placeholder: |
+        Example: The `pylint` hook fails with:
+        ```
+        ************* Module F0401
+        F0401:1:0: F0001: No module named F0401 (fatal)
+        ```
+        Full `pre-commit.log`:
+        ```
+        [ERROR] pylint failed: exit code 1
+        ```
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment Details
+      description: Provide details about your development environment, including Python version, operating system, dependency versions, and Git configuration.
+      placeholder: |
+        - **Python Version**: `python --version` (e.g., Python 3.8.10)
+        - **Operating System**: (e.g., Windows 10, Ubuntu 20.04)
+        - **Dependency Versions**: Run `pip freeze > requirements.txt` and share relevant packages (e.g., `mypy==1.11.2`, `pylint==3.3.1`, `pytest==7.4.0`)
+        - **Git Configuration**: Run `git config --list | grep core` (e.g., `core.autocrlf=false`, `core.eol=lf`)
+        - **Pre-commit Version**: Run `pre-commit --version` (e.g., pre-commit 3.8.0)
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional Context
+      description: Provide any additional information that might help diagnose the issue, such as recent changes, related issues, or troubleshooting steps already attempted.
+      placeholder: |
+        Example: I updated `.pre-commit-config.yaml` to fix the `pylint` `--disable` syntax, but the issue persists. I also tried running `pre-commit run pylint --all-files --verbose` and checked `pre-commit.log`.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      description: Confirm that you have completed the following steps before submitting this bug report.
+      options:
+        - label: I have read `CONTRIBUTING.md` and followed the setup instructions in `README.md`.
+          required: true
+        - label: I have run `pre-commit run --all-files` and addressed any hook failures.
+          required: true
+        - label: I have verified that my environment uses `LF` line endings (`git config core.autocrlf false`, `core.eol=lf`).
+          required: true
+        - label: I have included all relevant logs, error messages, or screenshots in the "Actual Behavior" section.
+          required: true
+        - label: I have searched existing issues to ensure this bug has not already been reported.
+          required: true

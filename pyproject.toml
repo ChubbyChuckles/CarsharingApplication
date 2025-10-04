@@ -1,0 +1,71 @@
+[project]
+name = "project-template"
+version = "0.1.0"
+description = "A Python project template with automated setup and documentation"
+authors = [{name = "ChubbyChuckles", email = "christian.rickert.1989@gmail.com"}]
+license = {text = "MIT"}
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "numpy",
+    "pandas",
+    "matplotlib",
+    "sphinx",
+    "sphinx-rtd-theme",
+    "sphinxcontrib-napoleon",
+    "pre-commit",
+]
+
+[project.urls]
+Homepage = "https://github.com/ChubbyChuckles/project-template"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.black]
+line-length = 100
+target-version = ['py38']
+
+[tool.flake8]
+max-line-length = 100
+extend-ignore = "E203"
+exclude = [
+    ".venv",
+    ".pytest_cache",
+    "bootstrap.py",
+    "docs/source/conf.py",
+]
+
+[tool.pylint]
+ignore = [
+    "docs/source/conf.py",
+    "tests/__init__.py",
+    "src/__init__.py",
+    "src/config/",
+    "bootstrap.py",
+]
+ignore-patterns = [
+    ".*_generated\\.py$",
+]
+max-line-length = 100
+disable = [
+    "C0114",  # Missing module docstring
+    "F0401",  # Unable to import (import-error)
+    "E0611",  # No name in module (no-name-in-module)
+]
+
+[tool.mypy]
+python_version = "3.8"
+strict = true
+show_error_codes = true
+disable_error_code = [
+    "import",
+]
+exclude = [
+    "docs/source/conf.py",
+]
+
+[tool.pytest.ini_options]
+minversion = "6.0"
+testpaths = ["tests"]
