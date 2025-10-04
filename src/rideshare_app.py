@@ -20,6 +20,7 @@ The application loads this variable on start-up. The key must have access to the
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import sys
@@ -35,6 +36,7 @@ from PyQt6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QFont
 from PyQt6.QtWidgets import (
     QApplication,
+    QAbstractItemView,
     QComboBox,
     QCompleter,
     QDoubleSpinBox,
@@ -59,6 +61,7 @@ from PyQt6.QtWidgets import (
 
 DATABASE_FILE = Path(__file__).resolve().parent / "rideshare.db"
 STYLE_FILE = Path(__file__).resolve().parent / "resources" / "style.qss"
+SETTINGS_FILE = Path(__file__).resolve().parent / "config" / "settings.json"
 
 
 def split_amount_evenly(amount: float, parts: int) -> list[float]:
@@ -83,6 +86,51 @@ def split_amount_evenly(amount: float, parts: int) -> list[float]:
 
 class GoogleMapsError(RuntimeError):
     """Domain-specific error raised for Google Maps integration problems."""
+
+
+def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    for key, value in override.items():
+        if key in base and isinstance(base[key], dict) and isinstance(value, dict):
+            base[key] = _deep_merge(base[key], value)
+        else:
+            base[key] = value
+    return base
+
+
+class SettingsManager:
+    """Load and persist lightweight JSON application settings."""
+
+    DEFAULTS: dict[str, Any] = {
+        "default_home_address": "Franckestraße 15, Leipzig-Ost, Germany",
+        "default_flat_fee": 5.0,
+        "default_fee_per_km": 0.5,
+        "window_size": {"width": 1100, "height": 740},
+    }
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.data = json.loads(json.dumps(self.DEFAULTS))  # deep copy
+        self._load()
+
+    def _load(self) -> None:
+        if not self.path.exists():
+            self.save()
+            return
+        try:
+            loaded = json.loads(self.path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            self.save()
+            return
+        if isinstance(loaded, dict):
+            self.data = _deep_merge(self.data, loaded)
+
+    def save(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(json.dumps(self.data, indent=2), encoding="utf-8")
+
+    def update(self, updates: dict[str, Any]) -> None:
+        self.data = _deep_merge(self.data, updates)
+        self.save()
 
 
 class WorkerSignals(QObject):
@@ -359,10 +407,14 @@ class DatabaseManager:
             conn.commit()
         return ride_id
 
-    def fetch_rides_with_passengers(self) -> List[dict[str, Any]]:
+    def delete_ride(self, ride_id: int) -> None:
         with self._connect() as conn:
-            ride_rows = conn.execute(
-                """
+            conn.execute("DELETE FROM rides WHERE id = ?", (ride_id,))
+            conn.commit()
+
+    def fetch_rides_with_passengers(self, limit: Optional[int] = None) -> List[dict[str, Any]]:
+        with self._connect() as conn:
+            query = """
                 SELECT r.id,
                        r.start_address,
                        r.destination_address,
@@ -374,8 +426,12 @@ class DatabaseManager:
                        r.ride_datetime
                 FROM rides r
                 ORDER BY datetime(r.ride_datetime) DESC
-                """
-            ).fetchall()
+            """
+            params: tuple[Any, ...] = ()
+            if limit is not None:
+                query += " LIMIT ?"
+                params = (limit,)
+            ride_rows = conn.execute(query, params).fetchall()
             rides: List[dict[str, Any]] = []
             for row in ride_rows:
                 driver_rows = conn.execute(
@@ -420,6 +476,30 @@ class DatabaseManager:
                     }
                 )
         return rides
+
+    def fetch_recent_addresses(self, limit: int = 10) -> dict[str, List[str]]:
+        with self._connect() as conn:
+            start_rows = conn.execute(
+                "SELECT start_address, ride_datetime FROM rides ORDER BY datetime(ride_datetime) DESC"
+            ).fetchall()
+            dest_rows = conn.execute(
+                "SELECT destination_address, ride_datetime FROM rides ORDER BY datetime(ride_datetime) DESC"
+            ).fetchall()
+
+        def _dedupe(rows: Iterable[sqlite3.Row]) -> List[str]:
+            seen: List[str] = []
+            for row in rows:
+                address = str(row[0])
+                if address and address not in seen:
+                    seen.append(address)
+                if len(seen) >= limit:
+                    break
+            return seen
+
+        return {
+            "start": _dedupe(start_rows),
+            "destination": _dedupe(dest_rows),
+        }
 
     def fetch_ledger_summary(self) -> List[dict[str, Any]]:
         with self._connect() as conn:
@@ -509,6 +589,11 @@ class AddressLineEdit(QLineEdit):
         self._completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         self._completer.setFilterMode(Qt.MatchFlag.MatchContains)
         self.setCompleter(self._completer)
+        popup = self._completer.popup()
+        popup.setStyleSheet(
+            "QListView { background-color: #1a2739; color: #edf2fb; } "
+            "QListView::item:selected { background-color: #35c4c7; color: #ffffff; }"
+        )
 
     def _on_text_changed(self, text: str) -> None:
         if len(text.strip()) < 3:
@@ -750,11 +835,21 @@ class RideSetupTab(QWidget):
         self.thread_pool = thread_pool
         self.members: list[TeamMember] = []
         self.member_lookup: dict[int, TeamMember] = {}
+        self._default_home_address = ""
+        self._default_flat_fee = 5.0
+        self._default_fee_per_km = 0.5
+        self._recent_start_addresses: list[str] = []
+        self._recent_destination_addresses: list[str] = []
 
         self.start_input = AddressLineEdit(self.maps_handler, self.thread_pool)
         self.dest_input = AddressLineEdit(self.maps_handler, self.thread_pool)
         self.start_input.api_error.connect(self._on_api_error)
         self.dest_input.api_error.connect(self._on_api_error)
+
+        self.start_history_combo = QComboBox()
+        self.start_history_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self.dest_history_combo = QComboBox()
+        self.dest_history_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
 
         self.driver_list = QListWidget()
         self.driver_list.setSelectionMode(QListWidget.SelectionMode.MultiSelection)
@@ -789,6 +884,7 @@ class RideSetupTab(QWidget):
         self._current_cost_per_passenger: Optional[float] = None
         self._current_paying_passenger_ids: list[int] = []
         self._current_all_passenger_ids: list[int] = []
+        self._current_driver_ids: list[int] = []
 
         self._build_layout()
         self._wire_signals()
@@ -799,8 +895,26 @@ class RideSetupTab(QWidget):
 
         addresses_group = QGroupBox("Addresses")
         addr_layout = QFormLayout(addresses_group)
-        addr_layout.addRow("Start Address", self.start_input)
-        addr_layout.addRow("Destination", self.dest_input)
+
+        start_row_widget = QWidget()
+        start_row_layout = QHBoxLayout(start_row_widget)
+        start_row_layout.setContentsMargins(0, 0, 0, 0)
+        start_row_layout.setSpacing(8)
+        start_row_layout.addWidget(self.start_input)
+        self.start_history_combo.setMinimumWidth(200)
+        self.start_history_combo.setToolTip("Select a start address from previous rides")
+        start_row_layout.addWidget(self.start_history_combo)
+        addr_layout.addRow("Start Address", start_row_widget)
+
+        dest_row_widget = QWidget()
+        dest_row_layout = QHBoxLayout(dest_row_widget)
+        dest_row_layout.setContentsMargins(0, 0, 0, 0)
+        dest_row_layout.setSpacing(8)
+        dest_row_layout.addWidget(self.dest_input)
+        self.dest_history_combo.setMinimumWidth(200)
+        self.dest_history_combo.setToolTip("Select a destination from previous rides")
+        dest_row_layout.addWidget(self.dest_history_combo)
+        addr_layout.addRow("Destination", dest_row_widget)
         layout.addWidget(addresses_group)
 
         team_group = QGroupBox("Team Selection")
@@ -835,6 +949,8 @@ class RideSetupTab(QWidget):
         self.per_km_input.valueChanged.connect(self._invalidate_calculation)
         self.start_input.textChanged.connect(self._invalidate_calculation)
         self.dest_input.textChanged.connect(self._invalidate_calculation)
+        self.start_history_combo.currentIndexChanged.connect(self._on_start_history_selected)
+        self.dest_history_combo.currentIndexChanged.connect(self._on_dest_history_selected)
 
     # Public API ----------------------------------------------------------
     def set_team_members(self, members: list[TeamMember]) -> None:
@@ -854,6 +970,61 @@ class RideSetupTab(QWidget):
         self.passenger_list.clearSelection()
         self._sync_driver_passenger_selection()
         self._invalidate_calculation()
+
+    def apply_settings(self, settings: dict[str, Any]) -> None:
+        self._default_home_address = str(
+            settings.get("default_home_address", self._default_home_address)
+        )
+        self._default_flat_fee = float(settings.get("default_flat_fee", self._default_flat_fee))
+        self._default_fee_per_km = float(
+            settings.get("default_fee_per_km", self._default_fee_per_km)
+        )
+
+        self.flat_fee_input.setValue(self._default_flat_fee)
+        self.per_km_input.setValue(self._default_fee_per_km)
+        if self._default_home_address:
+            self.start_input.setText(self._default_home_address)
+        else:
+            self.start_input.clear()
+        self.dest_input.clear()
+
+    def set_recent_addresses(
+        self, start_addresses: list[str], destination_addresses: list[str]
+    ) -> None:
+        self._recent_start_addresses = start_addresses
+        self._recent_destination_addresses = destination_addresses
+        self._populate_history_combo(self.start_history_combo, start_addresses)
+        self._populate_history_combo(self.dest_history_combo, destination_addresses)
+
+    def _populate_history_combo(self, combo: QComboBox, addresses: list[str]) -> None:
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem("Select previous address…", None)
+        for address in addresses:
+            combo.addItem(address, address)
+        combo.setCurrentIndex(0)
+        combo.setEnabled(bool(addresses))
+        combo.blockSignals(False)
+
+    def _on_start_history_selected(self, index: int) -> None:
+        address = self.start_history_combo.itemData(index)
+        if address:
+            self.start_input.setText(str(address))
+            self._invalidate_calculation()
+        self._reset_history_selection(self.start_history_combo)
+
+    def _on_dest_history_selected(self, index: int) -> None:
+        address = self.dest_history_combo.itemData(index)
+        if address:
+            self.dest_input.setText(str(address))
+            self._invalidate_calculation()
+        self._reset_history_selection(self.dest_history_combo)
+
+    @staticmethod
+    def _reset_history_selection(combo: QComboBox) -> None:
+        combo.blockSignals(True)
+        combo.setCurrentIndex(0)
+        combo.blockSignals(False)
 
     # Helper properties ---------------------------------------------------
     def _selected_driver_ids(self) -> List[int]:
@@ -931,12 +1102,13 @@ class RideSetupTab(QWidget):
         self.calculate_button.setEnabled(False)
         worker = Worker(self.maps_handler.distance_km, start_address, destination_address)
         worker.signals.finished.connect(
-            lambda distance: self._on_distance_ready(
+            lambda distance, driver_ids=driver_ids, passenger_ids=passenger_ids, core_passenger_ids=core_passenger_ids: self._on_distance_ready(
                 distance,
                 flat_fee,
                 per_km_fee,
                 passenger_ids,
                 core_passenger_ids,
+                driver_ids,
             )
         )
         worker.signals.error.connect(self._on_calculate_error)
@@ -949,6 +1121,7 @@ class RideSetupTab(QWidget):
         per_km_fee: float,
         passenger_ids: list[int],
         core_passenger_ids: list[int],
+        driver_ids: list[int],
     ) -> None:
         self.calculate_button.setEnabled(True)
         round_trip_distance = round(distance_km * 2, 2)
@@ -959,6 +1132,7 @@ class RideSetupTab(QWidget):
         self._current_cost_per_passenger = cost_per_passenger
         self._current_paying_passenger_ids = core_passenger_ids
         self._current_all_passenger_ids = passenger_ids
+        self._current_driver_ids = driver_ids
 
         self.distance_value.setText(f"{round_trip_distance:.2f} km")
         self.total_cost_value.setText(f"€{total_cost:.2f}")
@@ -1043,12 +1217,17 @@ class RideSetupTab(QWidget):
         self.ride_saved.emit()
 
     def _reset_form(self) -> None:
-        self.start_input.clear()
+        if self._default_home_address:
+            self.start_input.setText(self._default_home_address)
+        else:
+            self.start_input.clear()
         self.dest_input.clear()
         self.driver_list.clearSelection()
         self.passenger_list.clearSelection()
-        self.flat_fee_input.setValue(5.0)
-        self.per_km_input.setValue(0.5)
+        self.start_history_combo.setCurrentIndex(0)
+        self.dest_history_combo.setCurrentIndex(0)
+        self.flat_fee_input.setValue(self._default_flat_fee)
+        self.per_km_input.setValue(self._default_fee_per_km)
         self.distance_value.setText("—")
         self.total_cost_value.setText("—")
         self.cost_per_passenger_value.setText("—")
@@ -1058,6 +1237,7 @@ class RideSetupTab(QWidget):
         self._current_cost_per_passenger = None
         self._current_paying_passenger_ids = []
         self._current_all_passenger_ids = []
+        self._current_driver_ids = []
 
     def _invalidate_calculation(self) -> None:
         self.save_button.setEnabled(False)
@@ -1066,6 +1246,7 @@ class RideSetupTab(QWidget):
         self._current_cost_per_passenger = None
         self._current_paying_passenger_ids = []
         self._current_all_passenger_ids = []
+        self._current_driver_ids = []
         self.distance_value.setText("—")
         self.total_cost_value.setText("—")
         self.cost_per_passenger_value.setText("—")
@@ -1073,6 +1254,8 @@ class RideSetupTab(QWidget):
 
 class RideHistoryTab(QWidget):
     """Display past rides and current ledger balances."""
+
+    ride_deleted = pyqtSignal()
 
     def __init__(self, db_manager: DatabaseManager, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -1094,7 +1277,9 @@ class RideHistoryTab(QWidget):
         )
         self.rides_table.verticalHeader().setVisible(False)
         self.rides_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.rides_table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
+        self.rides_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.rides_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.rides_table.itemSelectionChanged.connect(self._update_delete_button_state)
         header = self.rides_table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
 
@@ -1105,21 +1290,38 @@ class RideHistoryTab(QWidget):
         self.ledger_table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
         ledger_header = self.ledger_table.horizontalHeader()
         ledger_header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.ledger_table.verticalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.ResizeToContents
+        )
+        self.ledger_table.setWordWrap(False)
+        self.ledger_table.setAlternatingRowColors(True)
+        self.ledger_table.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
 
         layout = QVBoxLayout(self)
         layout.setSpacing(24)
-        layout.addWidget(QLabel("Ride History"))
+        header_layout = QHBoxLayout()
+        header_layout.addWidget(QLabel("Ride History (Last 3)"))
+        header_layout.addStretch()
+        self.delete_button = QPushButton("Delete Selected Ride")
+        self.delete_button.setEnabled(False)
+        self.delete_button.clicked.connect(self._on_delete_clicked)
+        header_layout.addWidget(self.delete_button)
+        layout.addLayout(header_layout)
         layout.addWidget(self.rides_table)
         layout.addWidget(QLabel("Net Ledger (All Rides)"))
         layout.addWidget(self.ledger_table)
         layout.addStretch(1)
 
     def refresh(self) -> None:
-        rides = self.db_manager.fetch_rides_with_passengers()
+        rides = self.db_manager.fetch_rides_with_passengers(limit=3)
         self.rides_table.setRowCount(len(rides))
         for row_idx, ride in enumerate(rides):
             self._set_table_item(
-                self.rides_table, row_idx, 0, self._format_datetime(ride["ride_datetime"])
+                self.rides_table,
+                row_idx,
+                0,
+                self._format_datetime(ride["ride_datetime"]),
+                user_data=ride["id"],
             )
             drivers_text = ", ".join(ride["drivers"]) if ride["drivers"] else "—"
             passengers_text = ", ".join(ride["passengers"]) if ride["passengers"] else "—"
@@ -1132,6 +1334,8 @@ class RideHistoryTab(QWidget):
             self._set_table_item(self.rides_table, row_idx, 7, f"€{ride['fee_per_km']:.2f}")
             self._set_table_item(self.rides_table, row_idx, 8, f"€{ride['total_cost']:.2f}")
         self.rides_table.resizeRowsToContents()
+        self.rides_table.clearSelection()
+        self._update_delete_button_state()
 
         ledger_entries = self.db_manager.fetch_ledger_summary()
         self.ledger_table.setRowCount(len(ledger_entries))
@@ -1141,11 +1345,53 @@ class RideHistoryTab(QWidget):
             self._set_table_item(self.ledger_table, row_idx, 2, f"€{entry['amount']:.2f}")
         self.ledger_table.resizeRowsToContents()
 
+    def _selected_ride_id(self) -> Optional[int]:
+        row = self.rides_table.currentRow()
+        if row < 0:
+            return None
+        item = self.rides_table.item(row, 0)
+        if item is None:
+            return None
+        ride_id = item.data(Qt.ItemDataRole.UserRole)
+        if ride_id is None:
+            return None
+        return int(ride_id)
+
+    def _update_delete_button_state(self) -> None:
+        self.delete_button.setEnabled(self._selected_ride_id() is not None)
+
+    def _on_delete_clicked(self) -> None:
+        ride_id = self._selected_ride_id()
+        if ride_id is None:
+            return
+        confirm = QMessageBox.question(
+            self,
+            "Delete Ride?",
+            "Are you sure you want to delete the selected ride? This will also remove its ledger entries.",
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.db_manager.delete_ride(ride_id)
+        except sqlite3.DatabaseError as exc:
+            QMessageBox.critical(self, "Database Error", f"Failed to delete ride: {exc}")
+            return
+        self.refresh()
+        self.ride_deleted.emit()
+
     @staticmethod
-    def _set_table_item(table: QTableWidget, row: int, column: int, text: str) -> None:
+    def _set_table_item(
+        table: QTableWidget,
+        row: int,
+        column: int,
+        text: str,
+        user_data: Any | None = None,
+    ) -> None:
         item = QTableWidgetItem(text)
         item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
         item.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+        if user_data is not None:
+            item.setData(Qt.ItemDataRole.UserRole, user_data)
         table.setItem(row, column, item)
 
     @staticmethod
@@ -1160,20 +1406,31 @@ class RideHistoryTab(QWidget):
 class RideShareApp(QMainWindow):
     """Main window that orchestrates the individual tabs."""
 
-    def __init__(self, db_manager: DatabaseManager, maps_handler: GoogleMapsHandler) -> None:
+    def __init__(
+        self,
+        db_manager: DatabaseManager,
+        maps_handler: GoogleMapsHandler,
+        settings_manager: SettingsManager,
+    ) -> None:
         super().__init__()
         self.db_manager = db_manager
         self.maps_handler = maps_handler
+        self.settings_manager = settings_manager
         self.thread_pool = QThreadPool()
 
         self.setWindowTitle("Table Tennis RideShare Manager")
-        self.resize(1100, 740)
+        window_size = self.settings_manager.data.get("window_size", {})
+        self.resize(
+            int(window_size.get("width", 1100)),
+            int(window_size.get("height", 740)),
+        )
 
         self.tabs = QTabWidget()
         self.setCentralWidget(self.tabs)
 
         self.team_tab = TeamManagementTab(self.db_manager)
         self.ride_tab = RideSetupTab(self.db_manager, self.maps_handler, self.thread_pool)
+        self.ride_tab.apply_settings(self.settings_manager.data)
         self.history_tab = RideHistoryTab(self.db_manager)
 
         self.tabs.addTab(self.team_tab, "Team Management")
@@ -1181,7 +1438,8 @@ class RideShareApp(QMainWindow):
         self.tabs.addTab(self.history_tab, "Ride History & Ledger")
 
         self.team_tab.members_changed.connect(self._on_members_changed)
-        self.ride_tab.ride_saved.connect(self.history_tab.refresh)
+        self.ride_tab.ride_saved.connect(self._on_ride_saved)
+        self.history_tab.ride_deleted.connect(self._on_ride_deleted)
 
         self._initialise_state()
 
@@ -1196,9 +1454,35 @@ class RideShareApp(QMainWindow):
         ]
         self.ride_tab.set_team_members(members)
         self.history_tab.refresh()
+        self._refresh_recent_addresses()
 
     def _on_members_changed(self, members: list[TeamMember]) -> None:
         self.ride_tab.set_team_members(members)
+        self.history_tab.refresh()
+        self._refresh_recent_addresses()
+
+    def _refresh_recent_addresses(self) -> None:
+        addresses = self.db_manager.fetch_recent_addresses()
+        self.ride_tab.set_recent_addresses(
+            addresses.get("start", []), addresses.get("destination", [])
+        )
+
+    def _on_ride_saved(self) -> None:
+        self.history_tab.refresh()
+        self._refresh_recent_addresses()
+
+    def _on_ride_deleted(self) -> None:
+        self._refresh_recent_addresses()
+
+    def closeEvent(self, event) -> None:  # type: ignore[override]
+        self.settings_manager.update(
+            {
+                "default_flat_fee": float(self.ride_tab.flat_fee_input.value()),
+                "default_fee_per_km": float(self.ride_tab.per_km_input.value()),
+                "window_size": {"width": self.width(), "height": self.height()},
+            }
+        )
+        super().closeEvent(event)
         self.history_tab.refresh()
 
 
@@ -1224,6 +1508,7 @@ def bootstrap_app() -> int:
 
     db_manager = DatabaseManager(DATABASE_FILE)
     maps_handler = GoogleMapsHandler(api_key)
+    settings_manager = SettingsManager(SETTINGS_FILE)
 
     app = QApplication(sys.argv)
     app.setFont(QFont("Segoe UI", 10))
@@ -1231,7 +1516,7 @@ def bootstrap_app() -> int:
     if stylesheet:
         app.setStyleSheet(stylesheet)
 
-    window = RideShareApp(db_manager, maps_handler)
+    window = RideShareApp(db_manager, maps_handler, settings_manager)
     window.show()
     return app.exec()
 

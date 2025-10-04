@@ -9,6 +9,7 @@ An elegant PyQt6 desktop application that helps a table tennis team coordinate r
 - **Team management** – Add, rename, and remove players with persistent storage in SQLite, complete with validation, helpful feedback, and colour-coded rows that distinguish core members from reserves at a glance.
 - **Ride history & ledger** – Review every saved trip, including passengers, costs, and the current balance of who owes whom.
 - **Polished UI** – Styled with Qt Style Sheets for a clean, professional look featuring rounded corners, gradient buttons, and Segoe UI typography.
+- **Smart defaults & history** – Store your preferred home address, fee defaults, and window size in `settings.json`, quickly reuse locations from past rides, and trim the history view to the three most recent trips while keeping a comprehensive net ledger.
 
 ## 📦 Requirements
 
@@ -39,6 +40,7 @@ python -m src.main
 ```
 
 On first launch the database file `src/rideshare.db` is created automatically with the required tables.
+The file `src/config/settings.json` is also created with sensible defaults (home address, fees, and window size) that will update as you use the app.
 
 ## 🧭 Using the App
 
@@ -52,12 +54,14 @@ On first launch the database file `src/rideshare.db` is created automatically wi
 - Start typing addresses to receive Google-powered autocomplete suggestions.
 - Choose one or more drivers and any passengers taking part in the ride. Selected drivers are automatically excluded from the passenger list so they never contribute to the split.
 - Enter the driver’s flat fee (in euros) and per-kilometre rate. The app doubles the Google Maps driving distance to account for the return trip before calculating totals.
+- Use the **Recent** drop-downs beside each address field to quickly reuse locations from previous trips, or rely on the default home address that pre-fills new rides.
 - Click **Calculate Ride Cost** to see the round-trip distance, total cost, and the amount owed per core team member who actually rode. Core players who sit the ride out (or anyone marked reserve) simply stay unselected and are not charged.
 - Click **Save Ride** to persist the trip; only core passengers are written to the ledger and debts are recorded in euros.
 
 ### Ride History & Ledger Tab
 
-- Review a chronological list of rides with distances, fees, and participants, including every driver on multi-car trips.
+- Review a trimmed list of the three most recent rides with distances, fees, and participants, including every driver on multi-car trips. Older rides remain in the database and can still influence the ledger.
+- Use the **Delete Selected Ride** button to remove an entry (and its associated ledger rows) if it was created in error.
 - Inspect the live ledger, which now collapses all historical rides into net balances so you instantly see who ultimately owes whom (and by how much) across the entire season.
 
 ## 🛠 Architecture Overview
