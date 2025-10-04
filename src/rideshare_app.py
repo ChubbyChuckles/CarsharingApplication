@@ -651,6 +651,31 @@ class TeamManagementTab(QWidget):
         self.member_type_combo = QComboBox()
         self.member_type_combo.addItem("Core Member", True)
         self.member_type_combo.addItem("Reserve Player", False)
+        self.member_type_combo.setStyleSheet(
+            """
+            QComboBox {
+                background-color: #1f2a36;
+                color: #f4f6fa;
+                border: 1px solid #31445a;
+                border-radius: 4px;
+                padding: 4px 8px;
+            }
+            QComboBox::drop-down {
+                background-color: #2b3b4d;
+                border-left: 1px solid #31445a;
+                width: 22px;
+            }
+            QComboBox::down-arrow {
+                image: none;
+            }
+            QComboBox QAbstractItemView {
+                background-color: #141c27;
+                color: #f4f6fa;
+                selection-background-color: #35c4c7;
+                selection-color: #0b1118;
+            }
+            """
+        )
         self._set_type_combo(True)
 
         self.add_button = QPushButton("Save Team Member")
@@ -936,7 +961,7 @@ class RideSetupTab(QWidget):
         self.per_km_input.setPrefix("€ ")
         self.per_km_input.setSuffix(" / km")
         self.per_km_input.setDecimals(2)
-        self.per_km_input.setSingleStep(0.1)
+        self.per_km_input.setSingleStep(0.05)
         self.per_km_input.setValue(0.5)
 
         self.calculate_button = QPushButton("Calculate Ride Cost")
@@ -1323,7 +1348,6 @@ class RideSetupTab(QWidget):
             )
             return
 
-        QMessageBox.information(self, "Ride Saved", "The ride has been stored successfully.")
         self._reset_form()
         self.ride_saved.emit()
 
