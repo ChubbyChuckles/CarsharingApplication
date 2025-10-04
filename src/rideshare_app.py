@@ -32,7 +32,17 @@ from typing import Any, Callable, Iterable, List, Optional
 import googlemaps
 from dotenv import load_dotenv
 from googlemaps.exceptions import ApiError, TransportError
-from PyQt6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Qt, pyqtSignal, QStringListModel
+from PyQt6.QtCore import (
+    QObject,
+    QRunnable,
+    QThreadPool,
+    QTimer,
+    Qt,
+    pyqtSignal,
+    QStringListModel,
+    QEvent,
+    QPoint,
+)
 from PyQt6.QtGui import QColor, QFont
 from PyQt6.QtWidgets import (
     QApplication,
@@ -51,6 +61,8 @@ from PyQt6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QSizeGrip,
+    QSizePolicy,
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -164,10 +176,10 @@ class GoogleMapsHandler:
     """Wrapper around the ``googlemaps`` client with helpful defaults."""
 
     def __init__(self, api_key: str) -> None:
-        if not api_key:
-            raise GoogleMapsError(
-                "Google Maps API key missing. Set the GOOGLE_MAPS_API_KEY environment variable."
-            )
+        self.enabled = bool(api_key)
+        self.client = None
+        if not self.enabled:
+            return
         try:
             self.client = googlemaps.Client(key=api_key)
         except (ApiError, TransportError) as exc:  # pragma: no cover - network issues
@@ -175,6 +187,8 @@ class GoogleMapsHandler:
 
     def autocomplete(self, query: str) -> List[str]:
         """Return address suggestions for the provided query string."""
+        if not self.enabled or self.client is None:
+            return []
         if not query.strip():
             return []
         try:
@@ -189,6 +203,10 @@ class GoogleMapsHandler:
 
     def distance_km(self, origin: str, destination: str) -> float:
         """Return the driving distance between two addresses in kilometres."""
+        if not self.enabled:
+            raise GoogleMapsError(
+                "Google Maps API key is not configured. Distance lookup is disabled."
+            )
         try:
             matrix = self.client.distance_matrix(
                 origins=[origin],
@@ -644,10 +662,13 @@ class TeamManagementTab(QWidget):
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
+        header.setMinimumSectionSize(120)
         header.sectionResized.connect(self._on_column_resized)
-        self.table.setColumnWidth(0, 420)
         self.table.setColumnWidth(1, 160)
 
         self._build_layout()
@@ -674,8 +695,9 @@ class TeamManagementTab(QWidget):
 
         layout = QVBoxLayout(self)
         layout.setSpacing(20)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(form_group)
-        layout.addWidget(self.table)
+        layout.addWidget(self.table, 1)
 
     def _wire_signals(self) -> None:
         self.add_button.clicked.connect(self._on_add_member)
@@ -689,9 +711,15 @@ class TeamManagementTab(QWidget):
             coerced: list[int] = []
             for value in widths:
                 try:
-                    coerced.append(max(80, int(value)))
+                    sanitized = max(80, int(value))
                 except (TypeError, ValueError):
                     return
+                index = len(coerced)
+                if index == 1:
+                    sanitized = min(sanitized, 360)
+                coerced.append(sanitized)
+            if len(coerced) > self.table.columnCount():
+                coerced = coerced[: self.table.columnCount()]
             self._column_widths = coerced
             self._restore_column_widths()
 
@@ -704,17 +732,23 @@ class TeamManagementTab(QWidget):
         header = self.table.horizontalHeader()
         header.blockSignals(True)
         for index, width in enumerate(self._column_widths):
+            if index == 0:
+                continue
             if index < self.table.columnCount():
                 self.table.setColumnWidth(index, width)
         header.blockSignals(False)
 
     def _on_column_resized(self, index: int, _old: int, new: int) -> None:
+        if index == 0:
+            return
         widths = self._column_widths or [
             self.table.columnWidth(i) for i in range(self.table.columnCount())
         ]
         if index >= len(widths):
             widths = [self.table.columnWidth(i) for i in range(self.table.columnCount())]
         widths[index] = max(80, new)
+        if index == 1:
+            widths[index] = min(widths[index], 360)
         self._column_widths = widths
 
     def refresh_members(self) -> None:
@@ -1482,6 +1516,115 @@ class RideHistoryTab(QWidget):
         return dt.strftime("%Y-%m-%d %H:%M")
 
 
+class WindowTitleBar(QWidget):
+    """Custom dark-themed window chrome with caption controls."""
+
+    def __init__(self, window: QMainWindow) -> None:
+        super().__init__(window)
+        self._window = window
+        self.setObjectName("WindowTitleBar")
+        self.setFixedHeight(46)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(18, 6, 14, 6)
+        layout.setSpacing(10)
+
+        self.title_label = QLabel(window.windowTitle())
+        self.title_label.setObjectName("WindowTitleBarLabel")
+        self.title_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        layout.addWidget(self.title_label)
+        layout.addStretch(1)
+
+        self.min_button = self._make_button("–", "Minimize", "ChromeMinButton")
+        self.max_button = self._make_button("⬜", "Maximize", "ChromeMaxButton")
+        self.close_button = self._make_button("×", "Close", "ChromeCloseButton")
+
+        layout.addWidget(self.min_button)
+        layout.addWidget(self.max_button)
+        layout.addWidget(self.close_button)
+
+        self.min_button.clicked.connect(self._window.showMinimized)
+        self.max_button.clicked.connect(self._window.toggle_max_restore)
+        self.close_button.clicked.connect(self._window.close)
+
+        self.setStyleSheet(
+            """
+            QWidget#WindowTitleBar {
+                background-color: #0f1623;
+                border-bottom: 1px solid #1d2736;
+            }
+            QLabel#WindowTitleBarLabel {
+                color: #f2f6ff;
+                font-weight: 600;
+                letter-spacing: 0.2px;
+            }
+            QPushButton[chrome="true"] {
+                background-color: transparent;
+                color: #dee7ff;
+                border: none;
+                border-radius: 4px;
+                min-width: 36px;
+                min-height: 28px;
+            }
+            QPushButton[chrome="true"]:hover {
+                background-color: #203045;
+            }
+            QPushButton#ChromeCloseButton[chrome="true"]:hover {
+                background-color: #d64545;
+                color: #ffffff;
+            }
+            """
+        )
+
+    def _make_button(self, text: str, tooltip: str, object_name: str) -> QPushButton:
+        button = QPushButton(text, self)
+        button.setObjectName(object_name)
+        button.setProperty("chrome", True)
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        button.setToolTip(tooltip)
+        return button
+
+    def set_title(self, title: str) -> None:
+        self.title_label.setText(title)
+
+    def update_for_window_state(self, maximized: bool) -> None:
+        if maximized:
+            self.max_button.setText("❐")
+            self.max_button.setToolTip("Restore Down")
+        else:
+            self.max_button.setText("⬜")
+            self.max_button.setToolTip("Maximize")
+
+    def mouseDoubleClickEvent(self, event) -> None:  # type: ignore[override]
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._window.end_drag()
+            self._window.toggle_max_restore()
+        super().mouseDoubleClickEvent(event)
+
+    def mousePressEvent(self, event) -> None:  # type: ignore[override]
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._window.begin_drag(event.globalPosition().toPoint())
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:  # type: ignore[override]
+        if event.buttons() & Qt.MouseButton.LeftButton:
+            self._window.drag_to(event.globalPosition().toPoint())
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:  # type: ignore[override]
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._window.end_drag()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+
 class RideShareApp(QMainWindow):
     """Main window that orchestrates the individual tabs."""
 
@@ -1496,6 +1639,21 @@ class RideShareApp(QMainWindow):
         self.maps_handler = maps_handler
         self.settings_manager = settings_manager
         self.thread_pool = QThreadPool()
+        self._is_dragging = False
+        self._drag_offset = QPoint()
+
+        if sys.platform == "win32":
+            self.setWindowFlags(
+                Qt.WindowType.Window
+                | Qt.WindowType.FramelessWindowHint
+                | Qt.WindowType.WindowSystemMenuHint
+                | Qt.WindowType.WindowMinimizeButtonHint
+                | Qt.WindowType.WindowMaximizeButtonHint
+                | Qt.WindowType.WindowCloseButtonHint
+            )
+            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
+        else:
+            self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
 
         self.setWindowTitle("Table Tennis RideShare Manager")
         window_size = self.settings_manager.data.get("window_size", {})
@@ -1504,8 +1662,37 @@ class RideShareApp(QMainWindow):
             int(window_size.get("height", 740)),
         )
 
+        self._chrome_body = QWidget(self)
+        self._chrome_body.setObjectName("ChromeBody")
+        chrome_layout = QVBoxLayout(self._chrome_body)
+        chrome_layout.setContentsMargins(0, 0, 0, 0)
+        chrome_layout.setSpacing(0)
+
+        self.title_bar = WindowTitleBar(self)
+        chrome_layout.addWidget(self.title_bar)
+
         self.tabs = QTabWidget()
-        self.setCentralWidget(self.tabs)
+        chrome_layout.addWidget(self.tabs, 1)
+
+        grip_container = QWidget(self._chrome_body)
+        grip_container.setFixedHeight(24)
+        grip_layout = QHBoxLayout(grip_container)
+        grip_layout.setContentsMargins(0, 0, 10, 10)
+        grip_layout.setSpacing(0)
+        grip_layout.addStretch(1)
+        self._size_grip = QSizeGrip(grip_container)
+        self._size_grip.setFixedSize(16, 16)
+        grip_layout.addWidget(
+            self._size_grip,
+            0,
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom,
+        )
+        chrome_layout.addWidget(grip_container, 0)
+
+        self.setCentralWidget(self._chrome_body)
+        self.windowTitleChanged.connect(self.title_bar.set_title)
+        self.title_bar.update_for_window_state(self.isMaximized())
+        self._size_grip.setVisible(not self.isMaximized())
 
         self.team_tab = TeamManagementTab(self.db_manager)
         self.team_tab.apply_settings(self.settings_manager.data)
@@ -1554,6 +1741,33 @@ class RideShareApp(QMainWindow):
     def _on_ride_deleted(self) -> None:
         self._refresh_recent_addresses()
 
+    def toggle_max_restore(self) -> None:
+        if self.isMaximized():
+            self.showNormal()
+        else:
+            self.showMaximized()
+        self.title_bar.update_for_window_state(self.isMaximized())
+        self._size_grip.setVisible(not self.isMaximized())
+
+    def changeEvent(self, event: QEvent) -> None:  # type: ignore[override]
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.WindowStateChange:
+            self.title_bar.update_for_window_state(self.isMaximized())
+            self._size_grip.setVisible(not self.isMaximized())
+
+    def begin_drag(self, global_pos: QPoint) -> None:
+        if self.isMaximized():
+            return
+        self._is_dragging = True
+        self._drag_offset = global_pos - self.frameGeometry().topLeft()
+
+    def drag_to(self, global_pos: QPoint) -> None:
+        if self._is_dragging and not self.isMaximized():
+            self.move(global_pos - self._drag_offset)
+
+    def end_drag(self) -> None:
+        self._is_dragging = False
+
     def closeEvent(self, event) -> None:  # type: ignore[override]
         self.settings_manager.update(
             {
@@ -1582,11 +1796,6 @@ def bootstrap_app() -> int:
 
     load_dotenv()
     api_key = os.getenv("GOOGLE_MAPS_API_KEY", "").strip()
-    if not api_key:
-        raise GoogleMapsError(
-            "Google Maps API key missing. Set the GOOGLE_MAPS_API_KEY environment variable."
-        )
-
     db_manager = DatabaseManager(DATABASE_FILE)
     maps_handler = GoogleMapsHandler(api_key)
     settings_manager = SettingsManager(SETTINGS_FILE)
@@ -1599,6 +1808,18 @@ def bootstrap_app() -> int:
 
     window = RideShareApp(db_manager, maps_handler, settings_manager)
     window.show()
+    if not maps_handler.enabled:
+        QTimer.singleShot(
+            0,
+            lambda: QMessageBox.warning(
+                window,
+                "Google Maps Disabled",
+                (
+                    "The Google Maps API key wasn't found. Autocomplete and distance lookup "
+                    "are disabled until you add one to the environment or your .env file."
+                ),
+            ),
+        )
     return app.exec()
 
 

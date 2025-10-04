@@ -18,21 +18,33 @@ def test_main_exits_when_api_key_missing(monkeypatch: pytest.MonkeyPatch) -> Non
 
     monkeypatch.setattr(rideshare_app, "load_dotenv", fake_load_dotenv)
 
-    captured_message: Dict[str, str] = {}
+    captured_warning: Dict[str, str] = {}
 
-    def fake_critical(parent, title, text):
-        captured_message["title"] = title
-        captured_message["text"] = text
+    def fake_warning(parent, title, text):
+        captured_warning["title"] = title
+        captured_warning["text"] = text
         return QMessageBox.StandardButton.Ok
 
-    monkeypatch.setattr(rideshare_app.QMessageBox, "critical", fake_critical)
+    monkeypatch.setattr(rideshare_app.QMessageBox, "warning", fake_warning)
+
+    def fake_single_shot(_msec, callback):
+        callback()
+
+    monkeypatch.setattr(rideshare_app.QTimer, "singleShot", staticmethod(fake_single_shot))
+
+    monkeypatch.setattr(rideshare_app.QApplication, "exec", staticmethod(lambda: 0))
+    monkeypatch.setattr(
+        rideshare_app.RideShareApp,
+        "nativeEvent",
+        lambda self, eventType, message: (False, 0),
+    )
 
     with pytest.raises(SystemExit) as exc:
         main()
 
-    assert exc.value.code == 1
-    assert captured_message["title"] == "Google Maps Configuration"
-    assert "Google Maps API key" in captured_message["text"]
+    assert exc.value.code == 0
+    assert captured_warning["title"] == "Google Maps Disabled"
+    assert "API key" in captured_warning["text"]
 
     app = QApplication.instance()
     if app is not None:

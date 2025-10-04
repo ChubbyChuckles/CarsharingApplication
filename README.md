@@ -41,8 +41,11 @@ python -m src.main
 
 On first launch the database file `src/rideshare.db` is created automatically with the required tables.
 The file `src/config/settings.json` is also created with sensible defaults (home address, fees, and window size) that will update as you use the app.
+If the **Google Maps API key** is missing the application still opens, but you'll see an in-app warning and autocomplete/distance calculations remain disabled until the key is added.
 
 ## 🧭 Using the App
+
+- The interface now uses a frameless dark chrome with built-in minimize, maximize/restore, and close controls; you can drag the custom title bar or the window edges to reposition or resize it.
 
 ### Team Management Tab
 
