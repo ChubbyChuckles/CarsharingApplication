@@ -32,7 +32,7 @@ import googlemaps
 from dotenv import load_dotenv
 from googlemaps.exceptions import ApiError, TransportError
 from PyQt6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Qt, pyqtSignal, QStringListModel
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QColor, QFont
 from PyQt6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -59,6 +59,26 @@ from PyQt6.QtWidgets import (
 
 DATABASE_FILE = Path(__file__).resolve().parent / "rideshare.db"
 STYLE_FILE = Path(__file__).resolve().parent / "resources" / "style.qss"
+
+
+def split_amount_evenly(amount: float, parts: int) -> list[float]:
+    """Split *amount* into *parts* nearly equal two-decimal floats.
+
+    The result sums to the original amount (rounded to cents).
+    """
+
+    if parts <= 0:
+        raise ValueError("parts must be a positive integer")
+
+    cents = int(round(amount * 100))
+    base = cents // parts
+    remainder = cents % parts
+
+    shares = []
+    for index in range(parts):
+        share_cents = base + (1 if index < remainder else 0)
+        shares.append(round(share_cents / 100.0, 2))
+    return shares
 
 
 class GoogleMapsError(RuntimeError):
@@ -188,6 +208,14 @@ class DatabaseManager:
             FOREIGN KEY(driver_id) REFERENCES team_members(id) ON DELETE RESTRICT
         );
 
+        CREATE TABLE IF NOT EXISTS ride_drivers (
+            ride_id INTEGER NOT NULL,
+            driver_id INTEGER NOT NULL,
+            PRIMARY KEY (ride_id, driver_id),
+            FOREIGN KEY(ride_id) REFERENCES rides(id) ON DELETE CASCADE,
+            FOREIGN KEY(driver_id) REFERENCES team_members(id) ON DELETE RESTRICT
+        );
+
         CREATE TABLE IF NOT EXISTS ride_passengers (
             ride_id INTEGER NOT NULL,
             passenger_id INTEGER NOT NULL,
@@ -218,6 +246,13 @@ class DatabaseManager:
                 conn.execute(
                     "ALTER TABLE team_members ADD COLUMN is_core INTEGER NOT NULL DEFAULT 1"
                 )
+
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO ride_drivers (ride_id, driver_id)
+                SELECT id, driver_id FROM rides
+                """
+            )
             conn.commit()
 
     # Team management -----------------------------------------------------
@@ -256,7 +291,7 @@ class DatabaseManager:
         start_address: str,
         destination_address: str,
         distance_km: float,
-        driver_id: int,
+        driver_ids: Iterable[int],
         passenger_ids: Iterable[int],
         paying_passenger_ids: Iterable[int],
         flat_fee: float,
@@ -264,9 +299,14 @@ class DatabaseManager:
         total_cost: float,
         cost_per_passenger: float,
     ) -> int:
-        passenger_ids = list(passenger_ids)
-        paying_passenger_ids = list(paying_passenger_ids)
+        driver_ids = [int(driver_id) for driver_id in driver_ids]
+        if not driver_ids:
+            raise ValueError("At least one driver must be supplied for a ride.")
+
+        passenger_ids = [int(pid) for pid in passenger_ids]
+        paying_passenger_ids = [int(pid) for pid in paying_passenger_ids]
         timestamp = datetime.utcnow().isoformat(timespec="seconds")
+        primary_driver_id = driver_ids[0]
         with self._connect() as conn:
             cursor = conn.execute(
                 """
@@ -286,7 +326,7 @@ class DatabaseManager:
                     start_address,
                     destination_address,
                     distance_km,
-                    driver_id,
+                    primary_driver_id,
                     flat_fee,
                     fee_per_km,
                     total_cost,
@@ -296,19 +336,26 @@ class DatabaseManager:
             )
             ride_id = int(cursor.lastrowid)
 
+            for driver_id in driver_ids:
+                conn.execute(
+                    "INSERT INTO ride_drivers (ride_id, driver_id) VALUES (?, ?)",
+                    (ride_id, driver_id),
+                )
             for passenger_id in passenger_ids:
                 conn.execute(
                     "INSERT INTO ride_passengers (ride_id, passenger_id) VALUES (?, ?)",
                     (ride_id, passenger_id),
                 )
+            per_driver_amounts = split_amount_evenly(cost_per_passenger, len(driver_ids))
             for passenger_id in paying_passenger_ids:
-                conn.execute(
-                    """
-                    INSERT INTO ledger_entries (ride_id, driver_id, passenger_id, amount)
-                    VALUES (?, ?, ?, ?)
-                    """,
-                    (ride_id, driver_id, passenger_id, cost_per_passenger),
-                )
+                for index, driver_id in enumerate(driver_ids):
+                    conn.execute(
+                        """
+                        INSERT INTO ledger_entries (ride_id, driver_id, passenger_id, amount)
+                        VALUES (?, ?, ?, ?)
+                        """,
+                        (ride_id, driver_id, passenger_id, per_driver_amounts[index]),
+                    )
             conn.commit()
         return ride_id
 
@@ -316,14 +363,31 @@ class DatabaseManager:
         with self._connect() as conn:
             ride_rows = conn.execute(
                 """
-                SELECT r.*, d.name AS driver_name
+                SELECT r.id,
+                       r.start_address,
+                       r.destination_address,
+                       r.distance_km,
+                       r.flat_fee,
+                       r.fee_per_km,
+                       r.total_cost,
+                       r.cost_per_passenger,
+                       r.ride_datetime
                 FROM rides r
-                JOIN team_members d ON r.driver_id = d.id
                 ORDER BY datetime(r.ride_datetime) DESC
                 """
             ).fetchall()
             rides: List[dict[str, Any]] = []
             for row in ride_rows:
+                driver_rows = conn.execute(
+                    """
+                    SELECT tm.name, tm.is_core
+                    FROM ride_drivers rd
+                    JOIN team_members tm ON rd.driver_id = tm.id
+                    WHERE rd.ride_id = ?
+                    ORDER BY tm.name COLLATE NOCASE
+                    """,
+                    (row["id"],),
+                ).fetchall()
                 passenger_rows = conn.execute(
                     """
                     SELECT tm.name, tm.is_core
@@ -345,31 +409,65 @@ class DatabaseManager:
                         "total_cost": row["total_cost"],
                         "cost_per_passenger": row["cost_per_passenger"],
                         "ride_datetime": row["ride_datetime"],
+                        "drivers": [
+                            f"{d['name']} ({'Core' if d['is_core'] else 'Reserve'})"
+                            for d in driver_rows
+                        ],
                         "passengers": [
                             f"{p['name']} ({'Core' if p['is_core'] else 'Reserve'})"
                             for p in passenger_rows
                         ],
-                        "driver_name": row["driver_name"],
                     }
                 )
         return rides
 
     def fetch_ledger_summary(self) -> List[dict[str, Any]]:
         with self._connect() as conn:
-            rows = conn.execute(
+            balances = conn.execute(
                 """
-                SELECT
-                    tm_passenger.name AS passenger_name,
-                    tm_driver.name AS driver_name,
-                    SUM(le.amount) AS amount_owed
-                FROM ledger_entries le
-                JOIN team_members tm_driver ON le.driver_id = tm_driver.id
-                JOIN team_members tm_passenger ON le.passenger_id = tm_passenger.id
-                GROUP BY le.driver_id, le.passenger_id
-                ORDER BY driver_name COLLATE NOCASE, passenger_name COLLATE NOCASE
+                SELECT driver_id, passenger_id, SUM(amount) AS total_amount
+                FROM ledger_entries
+                GROUP BY driver_id, passenger_id
                 """
             ).fetchall()
-        return [dict(row) for row in rows]
+            members = conn.execute("SELECT id, name FROM team_members").fetchall()
+
+        name_lookup = {row["id"]: row["name"] for row in members}
+        raw_balances: dict[tuple[int, int], float] = {}
+        for row in balances:
+            key = (int(row["passenger_id"]), int(row["driver_id"]))
+            raw_balances[key] = round(float(row["total_amount"] or 0.0), 2)
+
+        processed: set[tuple[int, int]] = set()
+        results: list[dict[str, Any]] = []
+        for (passenger_id, driver_id), amount in raw_balances.items():
+            if (passenger_id, driver_id) in processed:
+                continue
+
+            opposite_amount = raw_balances.get((driver_id, passenger_id), 0.0)
+            net = round(amount - opposite_amount, 2)
+
+            processed.add((passenger_id, driver_id))
+            processed.add((driver_id, passenger_id))
+
+            if abs(net) < 0.01:
+                continue
+
+            if net > 0:
+                owes_id, owed_id, value = passenger_id, driver_id, net
+            else:
+                owes_id, owed_id, value = driver_id, passenger_id, abs(net)
+
+            results.append(
+                {
+                    "owes_name": name_lookup.get(owes_id, "Unknown"),
+                    "owed_name": name_lookup.get(owed_id, "Unknown"),
+                    "amount": round(value, 2),
+                }
+            )
+
+        results.sort(key=lambda item: (-item["amount"], item["owes_name"], item["owed_name"]))
+        return results
 
 
 @dataclass
@@ -512,6 +610,13 @@ class TeamManagementTab(QWidget):
             type_item = QTableWidgetItem(type_label)
             type_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
 
+            accent_color = QColor("#35c4c7") if member.is_core else QColor("#b3bed4")
+            background_color = QColor("#103b43") if member.is_core else QColor("#232f44")
+            name_item.setForeground(accent_color)
+            type_item.setForeground(accent_color)
+            name_item.setBackground(background_color)
+            type_item.setBackground(background_color)
+
             self.table.setItem(row_index, 0, name_item)
             self.table.setItem(row_index, 1, type_item)
         self.table.resizeRowsToContents()
@@ -651,7 +756,8 @@ class RideSetupTab(QWidget):
         self.start_input.api_error.connect(self._on_api_error)
         self.dest_input.api_error.connect(self._on_api_error)
 
-        self.driver_combo = QComboBox()
+        self.driver_list = QListWidget()
+        self.driver_list.setSelectionMode(QListWidget.SelectionMode.MultiSelection)
         self.passenger_list = QListWidget()
         self.passenger_list.setSelectionMode(QListWidget.SelectionMode.MultiSelection)
 
@@ -699,7 +805,7 @@ class RideSetupTab(QWidget):
 
         team_group = QGroupBox("Team Selection")
         team_layout = QFormLayout(team_group)
-        team_layout.addRow("Driver", self.driver_combo)
+        team_layout.addRow("Drivers", self.driver_list)
         team_layout.addRow("Passengers", self.passenger_list)
         layout.addWidget(team_group)
 
@@ -723,7 +829,7 @@ class RideSetupTab(QWidget):
     def _wire_signals(self) -> None:
         self.calculate_button.clicked.connect(self._on_calculate_clicked)
         self.save_button.clicked.connect(self._on_save_clicked)
-        self.driver_combo.currentIndexChanged.connect(self._remove_driver_from_passengers)
+        self.driver_list.itemSelectionChanged.connect(self._on_driver_selection_changed)
         self.passenger_list.itemSelectionChanged.connect(self._invalidate_calculation)
         self.flat_fee_input.valueChanged.connect(self._invalidate_calculation)
         self.per_km_input.valueChanged.connect(self._invalidate_calculation)
@@ -734,24 +840,26 @@ class RideSetupTab(QWidget):
     def set_team_members(self, members: list[TeamMember]) -> None:
         self.members = members
         self.member_lookup = {member.member_id: member for member in members}
-        self.driver_combo.clear()
-        for member in members:
-            self.driver_combo.addItem(self._format_member(member), member.member_id)
-
+        self.driver_list.clear()
         self.passenger_list.clear()
         for member in members:
-            item = QListWidgetItem(self._format_member(member))
-            item.setData(Qt.ItemDataRole.UserRole, member.member_id)
-            self.passenger_list.addItem(item)
-        self._remove_driver_from_passengers()
+            driver_item = QListWidgetItem(self._format_member(member))
+            driver_item.setData(Qt.ItemDataRole.UserRole, member.member_id)
+            self.driver_list.addItem(driver_item)
+
+            passenger_item = QListWidgetItem(self._format_member(member))
+            passenger_item.setData(Qt.ItemDataRole.UserRole, member.member_id)
+            self.passenger_list.addItem(passenger_item)
+        self.driver_list.clearSelection()
+        self.passenger_list.clearSelection()
+        self._sync_driver_passenger_selection()
         self._invalidate_calculation()
 
     # Helper properties ---------------------------------------------------
-    def _selected_driver_id(self) -> Optional[int]:
-        index = self.driver_combo.currentIndex()
-        if index < 0:
-            return None
-        return int(self.driver_combo.currentData(Qt.ItemDataRole.UserRole))
+    def _selected_driver_ids(self) -> List[int]:
+        return [
+            int(item.data(Qt.ItemDataRole.UserRole)) for item in self.driver_list.selectedItems()
+        ]
 
     def _selected_passenger_ids(self) -> List[int]:
         return [
@@ -766,14 +874,19 @@ class RideSetupTab(QWidget):
         member = self.member_lookup.get(member_id)
         return bool(member and member.is_core)
 
-    def _remove_driver_from_passengers(self) -> None:
-        driver_id = self._selected_driver_id()
-        if driver_id is None:
+    def _sync_driver_passenger_selection(self) -> None:
+        driver_ids = {
+            int(item.data(Qt.ItemDataRole.UserRole)) for item in self.driver_list.selectedItems()
+        }
+        if not driver_ids:
             return
         for index in range(self.passenger_list.count()):
             item = self.passenger_list.item(index)
-            if int(item.data(Qt.ItemDataRole.UserRole)) == driver_id:
+            if int(item.data(Qt.ItemDataRole.UserRole)) in driver_ids:
                 item.setSelected(False)
+
+    def _on_driver_selection_changed(self) -> None:
+        self._sync_driver_passenger_selection()
         self._invalidate_calculation()
 
     # Event handlers ------------------------------------------------------
@@ -783,27 +896,22 @@ class RideSetupTab(QWidget):
     def _on_calculate_clicked(self) -> None:
         start_address = self.start_input.text().strip()
         destination_address = self.dest_input.text().strip()
-        driver_id = self._selected_driver_id()
+        driver_ids = self._selected_driver_ids()
         passenger_ids = self._selected_passenger_ids()
-        core_passenger_ids = [pid for pid in passenger_ids if self._is_core_member(pid)]
+        core_passenger_ids = [
+            pid for pid in passenger_ids if self._is_core_member(pid) and pid not in driver_ids
+        ]
         flat_fee = float(self.flat_fee_input.value())
         per_km_fee = float(self.per_km_input.value())
 
         if not start_address or not destination_address:
             QMessageBox.warning(self, "Missing Addresses", "Please enter both addresses.")
             return
-        if driver_id is None:
-            QMessageBox.warning(self, "Driver Missing", "Please select a driver.")
+        if not driver_ids:
+            QMessageBox.warning(self, "Driver Missing", "Please select at least one driver.")
             return
         if not passenger_ids:
             QMessageBox.warning(self, "Passengers Missing", "Select at least one passenger.")
-            return
-        if driver_id in passenger_ids:
-            QMessageBox.warning(
-                self,
-                "Invalid Selection",
-                "The driver cannot also be listed as a passenger.",
-            )
             return
         if flat_fee <= 0 or per_km_fee <= 0:
             QMessageBox.warning(
@@ -873,15 +981,17 @@ class RideSetupTab(QWidget):
             return
         start_address = self.start_input.text().strip()
         destination_address = self.dest_input.text().strip()
-        driver_id = self._selected_driver_id()
+        driver_ids = self._selected_driver_ids()
         passenger_ids = self._selected_passenger_ids()
-        core_passenger_ids = [pid for pid in passenger_ids if self._is_core_member(pid)]
+        core_passenger_ids = [
+            pid for pid in passenger_ids if self._is_core_member(pid) and pid not in driver_ids
+        ]
 
-        if driver_id is None or not passenger_ids:
+        if not driver_ids or not passenger_ids:
             QMessageBox.warning(
                 self,
                 "Invalid Selection",
-                "Please ensure a driver and at least one passenger are selected.",
+                "Please ensure at least one driver and one passenger are selected.",
             )
             return
         if not core_passenger_ids:
@@ -912,7 +1022,7 @@ class RideSetupTab(QWidget):
                 start_address=start_address,
                 destination_address=destination_address,
                 distance_km=self._current_distance,
-                driver_id=driver_id,
+                driver_ids=driver_ids,
                 passenger_ids=passenger_ids,
                 paying_passenger_ids=core_passenger_ids,
                 flat_fee=flat_fee,
@@ -935,6 +1045,7 @@ class RideSetupTab(QWidget):
     def _reset_form(self) -> None:
         self.start_input.clear()
         self.dest_input.clear()
+        self.driver_list.clearSelection()
         self.passenger_list.clearSelection()
         self.flat_fee_input.setValue(5.0)
         self.per_km_input.setValue(0.5)
@@ -971,7 +1082,7 @@ class RideHistoryTab(QWidget):
         self.rides_table.setHorizontalHeaderLabels(
             [
                 "Date",
-                "Driver",
+                "Drivers",
                 "Passengers",
                 "From",
                 "To",
@@ -988,7 +1099,7 @@ class RideHistoryTab(QWidget):
         header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
 
         self.ledger_table = QTableWidget(0, 3)
-        self.ledger_table.setHorizontalHeaderLabels(["Passenger", "Driver", "Amount Owed"])
+        self.ledger_table.setHorizontalHeaderLabels(["Pays", "Receives", "Net Amount"])
         self.ledger_table.verticalHeader().setVisible(False)
         self.ledger_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.ledger_table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
@@ -999,7 +1110,7 @@ class RideHistoryTab(QWidget):
         layout.setSpacing(24)
         layout.addWidget(QLabel("Ride History"))
         layout.addWidget(self.rides_table)
-        layout.addWidget(QLabel("Ledger"))
+        layout.addWidget(QLabel("Net Ledger (All Rides)"))
         layout.addWidget(self.ledger_table)
         layout.addStretch(1)
 
@@ -1010,8 +1121,10 @@ class RideHistoryTab(QWidget):
             self._set_table_item(
                 self.rides_table, row_idx, 0, self._format_datetime(ride["ride_datetime"])
             )
-            self._set_table_item(self.rides_table, row_idx, 1, ride["driver_name"])
-            self._set_table_item(self.rides_table, row_idx, 2, ", ".join(ride["passengers"]))
+            drivers_text = ", ".join(ride["drivers"]) if ride["drivers"] else "—"
+            passengers_text = ", ".join(ride["passengers"]) if ride["passengers"] else "—"
+            self._set_table_item(self.rides_table, row_idx, 1, drivers_text)
+            self._set_table_item(self.rides_table, row_idx, 2, passengers_text)
             self._set_table_item(self.rides_table, row_idx, 3, ride["start_address"])
             self._set_table_item(self.rides_table, row_idx, 4, ride["destination_address"])
             self._set_table_item(self.rides_table, row_idx, 5, f"{ride['distance_km']:.2f}")
@@ -1023,9 +1136,9 @@ class RideHistoryTab(QWidget):
         ledger_entries = self.db_manager.fetch_ledger_summary()
         self.ledger_table.setRowCount(len(ledger_entries))
         for row_idx, entry in enumerate(ledger_entries):
-            self._set_table_item(self.ledger_table, row_idx, 0, entry["passenger_name"])
-            self._set_table_item(self.ledger_table, row_idx, 1, entry["driver_name"])
-            self._set_table_item(self.ledger_table, row_idx, 2, f"€{entry['amount_owed']:.2f}")
+            self._set_table_item(self.ledger_table, row_idx, 0, entry["owes_name"])
+            self._set_table_item(self.ledger_table, row_idx, 1, entry["owed_name"])
+            self._set_table_item(self.ledger_table, row_idx, 2, f"€{entry['amount']:.2f}")
         self.ledger_table.resizeRowsToContents()
 
     @staticmethod
@@ -1086,6 +1199,7 @@ class RideShareApp(QMainWindow):
 
     def _on_members_changed(self, members: list[TeamMember]) -> None:
         self.ride_tab.set_team_members(members)
+        self.history_tab.refresh()
 
 
 def load_stylesheet() -> str:
