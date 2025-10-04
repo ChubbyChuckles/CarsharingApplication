@@ -137,3 +137,18 @@ QGroupBox::title {
     color: #f7fafc;
     font-weight: 600;
 }
+
+QMessageBox {
+    background-color: #162233;
+    color: #edf2fb;
+    border: 1px solid #2b3b52;
+    border-radius: 12px;
+}
+
+QMessageBox QLabel {
+    color: #edf2fb;
+}
+
+QMessageBox QPushButton {
+    min-width: 90px;
+}
