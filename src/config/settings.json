@@ -3,7 +3,11 @@
   "default_flat_fee": 5.0,
   "default_fee_per_km": 0.5,
   "window_size": {
-    "width": 1802,
+    "width": 943,
     "height": 1141
-  }
+  },
+  "team_table_column_widths": [
+    652,
+    1357
+  ]
 }

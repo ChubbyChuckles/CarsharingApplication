@@ -53,7 +53,7 @@ The file `src/config/settings.json` is also created with sensible defaults (home
 
 - Start typing addresses to receive Google-powered autocomplete suggestions.
 - Choose one or more drivers and any passengers taking part in the ride. Selected drivers are automatically excluded from the passenger list so they never contribute to the split.
-- Enter the driver’s flat fee (in euros) and per-kilometre rate. The app doubles the Google Maps driving distance to account for the return trip before calculating totals.
+- Enter each driver’s flat fee (in euros, applied per driver) alongside the per-kilometre rate. The app doubles the Google Maps driving distance to account for the return trip before calculating totals.
 - Use the **Recent** drop-downs beside each address field to quickly reuse locations from previous trips, or rely on the default home address that pre-fills new rides.
 - Click **Calculate Ride Cost** to see the round-trip distance, total cost, and the amount owed per core team member who actually rode. Core players who sit the ride out (or anyone marked reserve) simply stay unselected and are not charged.
 - Click **Save Ride** to persist the trip; only core passengers are written to the ledger and debts are recorded in euros.

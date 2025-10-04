@@ -105,6 +105,7 @@ class SettingsManager:
         "default_flat_fee": 5.0,
         "default_fee_per_km": 0.5,
         "window_size": {"width": 1100, "height": 740},
+        "team_table_column_widths": [420, 140],
     }
 
     def __init__(self, path: Path) -> None:
@@ -624,6 +625,7 @@ class TeamManagementTab(QWidget):
         super().__init__(parent)
         self.db_manager = db_manager
         self._selected_member: Optional[TeamMember] = None
+        self._column_widths: Optional[list[int]] = None
 
         self.name_input = QLineEdit()
         self.name_input.setPlaceholderText("Team member name")
@@ -643,8 +645,10 @@ class TeamManagementTab(QWidget):
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         header = self.table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        header.sectionResized.connect(self._on_column_resized)
+        self.table.setColumnWidth(0, 420)
+        self.table.setColumnWidth(1, 160)
 
         self._build_layout()
         self._wire_signals()
@@ -679,6 +683,40 @@ class TeamManagementTab(QWidget):
         self.delete_button.clicked.connect(self._on_delete_member)
         self.table.itemSelectionChanged.connect(self._on_table_selection_changed)
 
+    def apply_settings(self, settings: dict[str, Any]) -> None:
+        widths = settings.get("team_table_column_widths")
+        if isinstance(widths, list) and widths:
+            coerced: list[int] = []
+            for value in widths:
+                try:
+                    coerced.append(max(80, int(value)))
+                except (TypeError, ValueError):
+                    return
+            self._column_widths = coerced
+            self._restore_column_widths()
+
+    def get_column_widths(self) -> list[int]:
+        return [self.table.columnWidth(i) for i in range(self.table.columnCount())]
+
+    def _restore_column_widths(self) -> None:
+        if not self._column_widths:
+            return
+        header = self.table.horizontalHeader()
+        header.blockSignals(True)
+        for index, width in enumerate(self._column_widths):
+            if index < self.table.columnCount():
+                self.table.setColumnWidth(index, width)
+        header.blockSignals(False)
+
+    def _on_column_resized(self, index: int, _old: int, new: int) -> None:
+        widths = self._column_widths or [
+            self.table.columnWidth(i) for i in range(self.table.columnCount())
+        ]
+        if index >= len(widths):
+            widths = [self.table.columnWidth(i) for i in range(self.table.columnCount())]
+        widths[index] = max(80, new)
+        self._column_widths = widths
+
     def refresh_members(self) -> None:
         members = [
             TeamMember(member_id=row["id"], name=row["name"], is_core=bool(row["is_core"]))
@@ -704,6 +742,7 @@ class TeamManagementTab(QWidget):
 
             self.table.setItem(row_index, 0, name_item)
             self.table.setItem(row_index, 1, type_item)
+        self._restore_column_widths()
         self.table.resizeRowsToContents()
         self.members_changed.emit(members)
 
@@ -767,13 +806,6 @@ class TeamManagementTab(QWidget):
                 "Select Member",
                 "Choose a team member from the table to delete.",
             )
-            return
-        confirm = QMessageBox.question(
-            self,
-            "Delete Member?",
-            f"Are you sure you want to remove {self._selected_member.name}?",
-        )
-        if confirm != QMessageBox.StandardButton.Yes:
             return
         try:
             self.db_manager.delete_team_member(self._selected_member.member_id)
@@ -850,6 +882,8 @@ class RideSetupTab(QWidget):
         self.start_history_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
         self.dest_history_combo = QComboBox()
         self.dest_history_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self._style_history_combo(self.start_history_combo)
+        self._style_history_combo(self.dest_history_combo)
 
         self.driver_list = QListWidget()
         self.driver_list.setSelectionMode(QListWidget.SelectionMode.MultiSelection)
@@ -925,7 +959,7 @@ class RideSetupTab(QWidget):
 
         fees_group = QGroupBox("Fees")
         fees_layout = QFormLayout(fees_group)
-        fees_layout.addRow("Flat Fee", self.flat_fee_input)
+        fees_layout.addRow("Flat Fee (per Driver)", self.flat_fee_input)
         fees_layout.addRow("Fee per km", self.per_km_input)
         layout.addWidget(fees_group)
 
@@ -1005,6 +1039,42 @@ class RideSetupTab(QWidget):
         combo.setCurrentIndex(0)
         combo.setEnabled(bool(addresses))
         combo.blockSignals(False)
+
+    def _style_history_combo(self, combo: QComboBox) -> None:
+        combo.setStyleSheet(
+            """
+            QComboBox {
+                background-color: #1f2a36;
+                color: #f4f6fa;
+                border: 1px solid #31445a;
+                border-radius: 4px;
+                padding: 4px 8px;
+            }
+            QComboBox::drop-down {
+                background-color: #2b3b4d;
+                border-left: 1px solid #31445a;
+                width: 22px;
+            }
+            QComboBox::down-arrow {
+                image: none;
+            }
+            """
+        )
+        view = combo.view()
+        if view is not None:
+            view.setStyleSheet(
+                """
+                QAbstractItemView {
+                    background-color: #141c27;
+                    color: #f4f6fa;
+                    selection-background-color: #35c4c7;
+                    selection-color: #0b1118;
+                    padding: 4px;
+                }
+                """
+            )
+        combo.setMaxVisibleItems(8)
+        combo.setMinimumContentsLength(1)
 
     def _on_start_history_selected(self, index: int) -> None:
         address = self.start_history_combo.itemData(index)
@@ -1125,8 +1195,11 @@ class RideSetupTab(QWidget):
     ) -> None:
         self.calculate_button.setEnabled(True)
         round_trip_distance = round(distance_km * 2, 2)
+        driver_count = max(len(driver_ids), 1)
+        driver_flat_fee_total = round(flat_fee * driver_count, 2)
+        distance_cost = round(round_trip_distance * per_km_fee, 2)
         self._current_distance = round_trip_distance
-        total_cost = round(flat_fee + round_trip_distance * per_km_fee, 2)
+        total_cost = round(driver_flat_fee_total + distance_cost, 2)
         cost_per_passenger = round(total_cost / len(core_passenger_ids), 2)
         self._current_total_cost = total_cost
         self._current_cost_per_passenger = cost_per_passenger
@@ -1135,9 +1208,13 @@ class RideSetupTab(QWidget):
         self._current_driver_ids = driver_ids
 
         self.distance_value.setText(f"{round_trip_distance:.2f} km")
-        self.total_cost_value.setText(f"€{total_cost:.2f}")
+        driver_label = "driver" if driver_count == 1 else "drivers"
+        self.total_cost_value.setText(
+            f"€{total_cost:.2f} (flat: €{flat_fee:.2f} × {driver_count}, distance: €{distance_cost:.2f})"
+        )
+        core_count = len(core_passenger_ids)
         self.cost_per_passenger_value.setText(
-            f"€{cost_per_passenger:.2f} per core member ({len(core_passenger_ids)} total)"
+            f"€{cost_per_passenger:.2f} per core member ({core_count} total, {driver_count} {driver_label})"
         )
         self.save_button.setEnabled(True)
 
@@ -1270,7 +1347,7 @@ class RideHistoryTab(QWidget):
                 "From",
                 "To",
                 "Distance (km)",
-                "Flat Fee",
+                "Flat Fee (per Driver)",
                 "Fee/km",
                 "Total",
             ]
@@ -1282,6 +1359,12 @@ class RideHistoryTab(QWidget):
         self.rides_table.itemSelectionChanged.connect(self._update_delete_button_state)
         header = self.rides_table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        rides_vheader = self.rides_table.verticalHeader()
+        rides_vheader.setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
+        rides_vheader.setDefaultSectionSize(40)
+        self.rides_table.setMinimumHeight(
+            rides_vheader.defaultSectionSize() * 3 + header.height() + 36
+        )
 
         self.ledger_table = QTableWidget(0, 3)
         self.ledger_table.setHorizontalHeaderLabels(["Pays", "Receives", "Net Amount"])
@@ -1290,12 +1373,15 @@ class RideHistoryTab(QWidget):
         self.ledger_table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
         ledger_header = self.ledger_table.horizontalHeader()
         ledger_header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.ledger_table.verticalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.ResizeToContents
-        )
+        ledger_vheader = self.ledger_table.verticalHeader()
+        ledger_vheader.setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
+        ledger_vheader.setDefaultSectionSize(28)
         self.ledger_table.setWordWrap(False)
         self.ledger_table.setAlternatingRowColors(True)
         self.ledger_table.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self.ledger_table.setMinimumHeight(
+            ledger_vheader.defaultSectionSize() * 14 + ledger_header.height() + 24
+        )
 
         layout = QVBoxLayout(self)
         layout.setSpacing(24)
@@ -1364,13 +1450,6 @@ class RideHistoryTab(QWidget):
         ride_id = self._selected_ride_id()
         if ride_id is None:
             return
-        confirm = QMessageBox.question(
-            self,
-            "Delete Ride?",
-            "Are you sure you want to delete the selected ride? This will also remove its ledger entries.",
-        )
-        if confirm != QMessageBox.StandardButton.Yes:
-            return
         try:
             self.db_manager.delete_ride(ride_id)
         except sqlite3.DatabaseError as exc:
@@ -1429,6 +1508,7 @@ class RideShareApp(QMainWindow):
         self.setCentralWidget(self.tabs)
 
         self.team_tab = TeamManagementTab(self.db_manager)
+        self.team_tab.apply_settings(self.settings_manager.data)
         self.ride_tab = RideSetupTab(self.db_manager, self.maps_handler, self.thread_pool)
         self.ride_tab.apply_settings(self.settings_manager.data)
         self.history_tab = RideHistoryTab(self.db_manager)
@@ -1480,6 +1560,7 @@ class RideShareApp(QMainWindow):
                 "default_flat_fee": float(self.ride_tab.flat_fee_input.value()),
                 "default_fee_per_km": float(self.ride_tab.per_km_input.value()),
                 "window_size": {"width": self.width(), "height": self.height()},
+                "team_table_column_widths": self.team_tab.get_column_widths(),
             }
         )
         super().closeEvent(event)
