@@ -28,7 +28,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Iterable, List, Optional
+from typing import Any, Callable, Iterable, List, Optional, Sequence
 
 import googlemaps
 from dotenv import load_dotenv
@@ -43,8 +43,9 @@ from PyQt6.QtCore import (
     QStringListModel,
     QEvent,
     QPoint,
+    QRegularExpression,
 )
-from PyQt6.QtGui import QColor, QFont
+from PyQt6.QtGui import QColor, QFont, QRegularExpressionValidator, QValidator
 from PyQt6.QtWidgets import (
     QApplication,
     QAbstractItemView,
@@ -800,6 +801,101 @@ class CollapsibleSection(QWidget):
         self._content_frame.setVisible(expanded)
 
 
+class InlineFeedbackBanner(QFrame):
+    """Compact inline alert widget for contextual validation feedback."""
+
+    _ICONS: dict[str, str] = {
+        "info": "ℹ",
+        "success": "✔",
+        "warning": "⚠",
+        "error": "⛔",
+    }
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("InlineFeedbackBanner")
+        self.setProperty("severity", "info")
+        self.setVisible(False)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+        self._messages: list[str] = []
+        self._severity = "info"
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(16, 12, 14, 12)
+        layout.setSpacing(12)
+
+        self._icon_label = QLabel(self._ICONS["info"], self)
+        self._icon_label.setObjectName("InlineFeedbackIcon")
+        layout.addWidget(self._icon_label, 0, Qt.AlignmentFlag.AlignTop)
+
+        self._message_label = QLabel("", self)
+        self._message_label.setObjectName("InlineFeedbackMessage")
+        self._message_label.setWordWrap(True)
+        self._message_label.setTextFormat(Qt.TextFormat.RichText)
+        layout.addWidget(self._message_label, 1)
+
+        self._close_button = QPushButton("×", self)
+        self._close_button.setObjectName("InlineFeedbackCloseButton")
+        self._close_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._close_button.setFlat(True)
+        self._close_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._close_button.clicked.connect(self.clear)
+        layout.addWidget(self._close_button, 0, Qt.AlignmentFlag.AlignTop)
+
+    def show_messages(self, messages: Sequence[str], *, severity: str = "info") -> None:
+        cleaned = [line.strip() for line in messages if line and line.strip()]
+        if not cleaned:
+            self.clear()
+            return
+        self._messages = cleaned
+        self._severity = severity
+        self.setProperty("severity", severity)
+        icon = self._ICONS.get(severity, self._ICONS["info"])
+        self._icon_label.setText(icon)
+
+        if len(cleaned) == 1:
+            body = cleaned[0]
+        else:
+            bullet_items = "".join(f"<li>{msg}</li>" for msg in cleaned)
+            body = f"<ul>{bullet_items}</ul>"
+        self._message_label.setText(body)
+        self._refresh_style()
+        self.setVisible(True)
+
+    def show_message(self, message: str, *, severity: str = "info") -> None:
+        self.show_messages([message], severity=severity)
+
+    def clear(self) -> None:
+        self._messages = []
+        self._message_label.clear()
+        self._severity = "info"
+        self.setProperty("severity", "info")
+        self._refresh_style()
+        self.setVisible(False)
+
+    @property
+    def messages(self) -> list[str]:
+        return list(self._messages)
+
+    @property
+    def severity(self) -> str:
+        return self._severity
+
+    def _refresh_style(self) -> None:
+        style = self.style()
+        style.unpolish(self)
+        style.polish(self)
+        self.update()
+
+
+def _refresh_widget_style(widget: QWidget) -> None:
+    style = widget.style()
+    style.unpolish(widget)
+    style.polish(widget)
+    widget.update()
+
+
 class TeamManagementTab(QWidget):
     """Widget responsible for CRUD operations on team members."""
 
@@ -813,6 +909,12 @@ class TeamManagementTab(QWidget):
 
         self.name_input = QLineEdit()
         self.name_input.setPlaceholderText("Team member name")
+        self._name_validator = QRegularExpressionValidator(
+            QRegularExpression(r"^(?=.{2,60}$)[A-Za-zÀ-ÖØ-öø-ÿ0-9 ,.'-]+$"),
+            self,
+        )
+        self.name_input.setValidator(self._name_validator)
+        self.name_input.textChanged.connect(self._on_name_changed)
 
         self.member_type_combo = QComboBox()
         self.member_type_combo.addItem("Core Member", True)
@@ -862,6 +964,8 @@ class TeamManagementTab(QWidget):
         header.sectionResized.connect(self._on_column_resized)
         self.table.setColumnWidth(1, 160)
 
+        self.feedback_banner = InlineFeedbackBanner(self)
+
         self._build_layout()
         self._wire_signals()
         self.refresh_members()
@@ -887,6 +991,7 @@ class TeamManagementTab(QWidget):
         layout = QVBoxLayout(self)
         layout.setSpacing(20)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.feedback_banner)
         layout.addWidget(form_group)
         layout.addWidget(self.table, 1)
 
@@ -973,10 +1078,18 @@ class TeamManagementTab(QWidget):
 
     # Button handlers -----------------------------------------------------
     def _validate_name(self) -> Optional[str]:
-        name = self.name_input.text().strip()
-        if not name:
-            QMessageBox.warning(self, "Invalid Input", "Please enter a non-empty name.")
+        raw_text = self.name_input.text()
+        state, *_ = self._name_validator.validate(raw_text, 0)
+        if state != QValidator.State.Acceptable:
+            message = (
+                "Enter a name between 2 and 60 characters using letters, spaces, "
+                "apostrophes, or hyphens."
+            )
+            self._mark_invalid(self.name_input, message)
+            self.feedback_banner.show_message(message, severity="warning")
             return None
+        name = raw_text.strip()
+        self._clear_invalid(self.name_input)
         return name
 
     def _on_add_member(self) -> None:
@@ -986,66 +1099,64 @@ class TeamManagementTab(QWidget):
         try:
             self.db_manager.add_team_member(name, self._selected_type())
         except sqlite3.IntegrityError:
-            QMessageBox.warning(
-                self,
-                "Duplicate Member",
-                "A team member with that name already exists.",
-            )
+            message = f"{name} is already on the roster. Try another name."
+            self._mark_invalid(self.name_input, message)
+            self.feedback_banner.show_message(message, severity="error")
             return
         self.name_input.clear()
         self._set_type_combo(True)
         self._selected_member = None
         self.refresh_members()
         self.table.clearSelection()
+        self.feedback_banner.show_message(f"Added {name} to the roster.", severity="success")
 
     def _on_update_member(self) -> None:
         name = self._validate_name()
-        if not name or self._selected_member is None:
-            QMessageBox.information(
-                self,
-                "Select Member",
-                "Choose a team member from the table to update their name.",
-            )
+        if not name:
+            return
+        if self._selected_member is None:
+            message = "Select a team member in the table before updating."
+            self._mark_invalid(self.table, message)
+            self.feedback_banner.show_message(message, severity="warning")
             return
         try:
             self.db_manager.update_team_member(
                 self._selected_member.member_id, name, self._selected_type()
             )
         except sqlite3.IntegrityError:
-            QMessageBox.warning(
-                self,
-                "Duplicate Member",
-                "A team member with that name already exists.",
-            )
+            message = f"{name} is already on the roster. Try another name."
+            self._mark_invalid(self.name_input, message)
+            self.feedback_banner.show_message(message, severity="error")
             return
         self.name_input.clear()
         self._set_type_combo(True)
         self._selected_member = None
         self.refresh_members()
         self.table.clearSelection()
+        self._clear_invalid(self.table)
+        self.feedback_banner.show_message("Team member updated.", severity="success")
 
     def _on_delete_member(self) -> None:
         if self._selected_member is None:
-            QMessageBox.information(
-                self,
-                "Select Member",
-                "Choose a team member from the table to delete.",
-            )
+            message = "Select a team member in the table before deleting."
+            self._mark_invalid(self.table, message)
+            self.feedback_banner.show_message(message, severity="warning")
             return
         try:
             self.db_manager.delete_team_member(self._selected_member.member_id)
         except sqlite3.IntegrityError:
-            QMessageBox.critical(
-                self,
-                "Cannot Delete",
-                "This member is associated with rides and cannot be removed.",
+            message = (
+                f"{self._selected_member.name} is linked to existing rides and cannot be removed."
             )
+            self.feedback_banner.show_message(message, severity="error")
             return
         self._selected_member = None
         self.name_input.clear()
         self._set_type_combo(True)
         self.refresh_members()
         self.table.clearSelection()
+        self._clear_invalid(self.table)
+        self.feedback_banner.show_message("Team member deleted.", severity="success")
 
     def _on_table_selection_changed(self) -> None:
         items = self.table.selectedItems()
@@ -1060,6 +1171,8 @@ class TeamManagementTab(QWidget):
         self._selected_member = TeamMember(member_id, name, is_core)
         self.name_input.setText(name)
         self._set_type_combo(is_core)
+        self._clear_invalid(self.table)
+        self.feedback_banner.clear()
 
     def _selected_type(self) -> bool:
         data = self.member_type_combo.currentData(Qt.ItemDataRole.UserRole)
@@ -1072,6 +1185,25 @@ class TeamManagementTab(QWidget):
             if bool(self.member_type_combo.itemData(index, Qt.ItemDataRole.UserRole)) == is_core:
                 self.member_type_combo.setCurrentIndex(index)
                 break
+
+    def _on_name_changed(self, text: str) -> None:
+        state, *_ = self._name_validator.validate(text, 0)
+        if state == QValidator.State.Acceptable:
+            self._clear_invalid(self.name_input)
+            if self.feedback_banner.severity in {"warning", "error"}:
+                self.feedback_banner.clear()
+
+    def _mark_invalid(self, widget: QWidget, message: str | None = None) -> None:
+        widget.setProperty("validationState", "error")
+        if message:
+            widget.setToolTip(message)
+        _refresh_widget_style(widget)
+
+    def _clear_invalid(self, widget: QWidget) -> None:
+        if widget.property("validationState"):
+            widget.setProperty("validationState", "")
+        widget.setToolTip("")
+        _refresh_widget_style(widget)
 
 
 class RideSetupTab(QWidget):
@@ -1102,6 +1234,10 @@ class RideSetupTab(QWidget):
         self.dest_input = AddressLineEdit(self.maps_handler, self.thread_pool)
         self.start_input.api_error.connect(self._on_api_error)
         self.dest_input.api_error.connect(self._on_api_error)
+        address_pattern = QRegularExpression(r"^[^\n]{0,120}$")
+        self._address_validator = QRegularExpressionValidator(address_pattern, self)
+        self.start_input.setValidator(self._address_validator)
+        self.dest_input.setValidator(self._address_validator)
 
         self.start_history_combo = QComboBox()
         self.start_history_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
@@ -1159,8 +1295,11 @@ class RideSetupTab(QWidget):
         self._current_all_passenger_ids: list[int] = []
         self._current_driver_ids: list[int] = []
 
+        self.validation_banner = InlineFeedbackBanner(self)
+
         self._build_layout()
         self._wire_signals()
+        self._setup_live_validation()
         self._configure_focus_disclosure()
 
     def _build_layout(self) -> None:
@@ -1179,6 +1318,7 @@ class RideSetupTab(QWidget):
         subtitle.setWordWrap(True)
         subtitle.setProperty("role", "subtitle")
         layout.addWidget(subtitle)
+        layout.addWidget(self.validation_banner)
 
         content_layout = QGridLayout()
         content_layout.setContentsMargins(0, 0, 0, 0)
@@ -1411,6 +1551,16 @@ class RideSetupTab(QWidget):
         self.start_history_combo.currentIndexChanged.connect(self._on_start_history_selected)
         self.dest_history_combo.currentIndexChanged.connect(self._on_dest_history_selected)
 
+    def _setup_live_validation(self) -> None:
+        self.start_input.textChanged.connect(lambda: self._on_address_changed(self.start_input))
+        self.dest_input.textChanged.connect(lambda: self._on_address_changed(self.dest_input))
+        self.flat_fee_input.valueChanged.connect(
+            lambda: self._on_numeric_changed(self.flat_fee_input)
+        )
+        self.per_km_input.valueChanged.connect(lambda: self._on_numeric_changed(self.per_km_input))
+        self.driver_list.itemSelectionChanged.connect(self._clear_banner_if_error)
+        self.passenger_list.itemSelectionChanged.connect(self._clear_banner_if_error)
+
     def _configure_focus_disclosure(self) -> None:
         self._section_focus_map: dict[QWidget, CollapsibleSection] = {
             self.start_input: self.address_section,
@@ -1607,55 +1757,133 @@ class RideSetupTab(QWidget):
         self._sync_driver_passenger_selection()
         self._invalidate_calculation()
 
-    # Event handlers ------------------------------------------------------
-    def _on_api_error(self, message: str) -> None:
-        QMessageBox.critical(self, "Google Maps Error", message)
+    def _collect_form_state(self) -> tuple[dict[str, Any] | None, list[str]]:
+        errors: list[str] = []
+        state: dict[str, Any] = {}
 
-    def _on_calculate_clicked(self) -> None:
         start_address = self.start_input.text().strip()
+        if len(start_address) < 3:
+            message = "Enter a start address with at least three characters."
+            errors.append(message)
+            self._mark_invalid(self.start_input, message)
+        else:
+            self._clear_invalid(self.start_input)
+            state["start_address"] = start_address
+
         destination_address = self.dest_input.text().strip()
+        if len(destination_address) < 3:
+            message = "Enter a destination with at least three characters."
+            errors.append(message)
+            self._mark_invalid(self.dest_input, message)
+        else:
+            self._clear_invalid(self.dest_input)
+            state["destination_address"] = destination_address
+
         driver_ids = self._selected_driver_ids()
+        if not driver_ids:
+            message = "Choose at least one driver."
+            errors.append(message)
+            self._mark_invalid(self.driver_list, message)
+        else:
+            self._clear_invalid(self.driver_list)
+            state["driver_ids"] = driver_ids
+
         passenger_ids = self._selected_passenger_ids()
+        if not passenger_ids:
+            message = "Select at least one passenger."
+            errors.append(message)
+            self._mark_invalid(self.passenger_list, message)
+        else:
+            self._clear_invalid(self.passenger_list)
+            state["passenger_ids"] = passenger_ids
+
         core_passenger_ids = [
             pid for pid in passenger_ids if self._is_core_member(pid) and pid not in driver_ids
         ]
+        if passenger_ids and not core_passenger_ids:
+            message = "Include at least one core team member in the passengers list."
+            errors.append(message)
+            self._mark_invalid(self.passenger_list, message)
+        elif core_passenger_ids:
+            state["core_passenger_ids"] = core_passenger_ids
+
         flat_fee = float(self.flat_fee_input.value())
+        if flat_fee <= 0:
+            message = "Flat fee must be greater than zero."
+            errors.append(message)
+            self._mark_invalid(self.flat_fee_input, message)
+        else:
+            self._clear_invalid(self.flat_fee_input)
+            state["flat_fee"] = flat_fee
+
         per_km_fee = float(self.per_km_input.value())
+        if per_km_fee <= 0:
+            message = "Per-kilometre fee must be greater than zero."
+            errors.append(message)
+            self._mark_invalid(self.per_km_input, message)
+        else:
+            self._clear_invalid(self.per_km_input)
+            state["per_km_fee"] = per_km_fee
 
-        if not start_address or not destination_address:
-            QMessageBox.warning(self, "Missing Addresses", "Please enter both addresses.")
-            return
-        if not driver_ids:
-            QMessageBox.warning(self, "Driver Missing", "Please select at least one driver.")
-            return
-        if not passenger_ids:
-            QMessageBox.warning(self, "Passengers Missing", "Select at least one passenger.")
-            return
-        if flat_fee <= 0 or per_km_fee <= 0:
-            QMessageBox.warning(
-                self,
-                "Invalid Fees",
-                "Both the flat fee and per-kilometre fee must be positive values.",
-            )
-            return
-        if not core_passenger_ids:
-            QMessageBox.warning(
-                self,
-                "No Core Members",
-                "Select at least one core team member as a passenger to share the ride cost.",
-            )
-            return
+        if errors:
+            return None, errors
+        return state, []
 
+    def _mark_invalid(self, widget: QWidget, message: str | None = None) -> None:
+        widget.setProperty("validationState", "error")
+        if message:
+            widget.setToolTip(message)
+        _refresh_widget_style(widget)
+
+    def _clear_invalid(self, widget: QWidget) -> None:
+        if widget.property("validationState"):
+            widget.setProperty("validationState", "")
+        widget.setToolTip("")
+        _refresh_widget_style(widget)
+
+    def _clear_banner_if_error(self) -> None:
+        if self.validation_banner.severity in {"warning", "error"}:
+            self.validation_banner.clear()
+
+    def _on_address_changed(self, widget: QLineEdit) -> None:
+        state, *_ = self._address_validator.validate(widget.text(), 0)
+        if state == QValidator.State.Acceptable:
+            self._clear_invalid(widget)
+            self._clear_banner_if_error()
+
+    def _on_numeric_changed(self, widget: QDoubleSpinBox) -> None:
+        if widget.value() > 0:
+            self._clear_invalid(widget)
+            self._clear_banner_if_error()
+
+    # Event handlers ------------------------------------------------------
+    def _on_api_error(self, message: str) -> None:
+        self.validation_banner.show_message(f"Google Maps error: {message}", severity="error")
+
+    def _on_calculate_clicked(self) -> None:
+        form_state, errors = self._collect_form_state()
+        if errors:
+            self.validation_banner.show_messages(errors, severity="warning")
+            return
+        if form_state is None:
+            return
         self.calculate_button.setEnabled(False)
-        worker = Worker(self.maps_handler.distance_km, start_address, destination_address)
+        self.validation_banner.show_message(
+            "Calculating the latest route distance…", severity="info"
+        )
+        worker = Worker(
+            self.maps_handler.distance_km,
+            form_state["start_address"],
+            form_state["destination_address"],
+        )
         worker.signals.finished.connect(
-            lambda distance, driver_ids=driver_ids, passenger_ids=passenger_ids, core_passenger_ids=core_passenger_ids: self._on_distance_ready(
+            lambda distance, state=form_state: self._on_distance_ready(
                 distance,
-                flat_fee,
-                per_km_fee,
-                passenger_ids,
-                core_passenger_ids,
-                driver_ids,
+                state["flat_fee"],
+                state["per_km_fee"],
+                state["passenger_ids"],
+                state["core_passenger_ids"],
+                state["driver_ids"],
             )
         )
         worker.signals.error.connect(self._on_calculate_error)
@@ -1704,79 +1932,63 @@ class RideSetupTab(QWidget):
         )
         self.save_button.setEnabled(True)
         self.summary_section.set_expanded(True)
+        self.validation_banner.show_message(
+            "Calculation updated. Review the totals, then save when you're ready.",
+            severity="success",
+        )
 
     def _on_calculate_error(self, message: str) -> None:
         self.calculate_button.setEnabled(True)
-        QMessageBox.critical(self, "Calculation Error", message)
+        self.validation_banner.show_message(
+            f"Unable to calculate the route: {message}", severity="error"
+        )
 
     def _on_save_clicked(self) -> None:
+        form_state, errors = self._collect_form_state()
+        if errors:
+            self.validation_banner.show_messages(errors, severity="warning")
+            return
+        if form_state is None:
+            return
         if self._current_distance is None or self._current_total_cost is None:
-            QMessageBox.information(
-                self,
-                "Calculate First",
-                "Please calculate the ride cost before saving.",
+            self.validation_banner.show_message(
+                "Run the cost calculation before saving so the totals are up to date.",
+                severity="warning",
             )
+            self.summary_section.set_expanded(True)
             return
-        start_address = self.start_input.text().strip()
-        destination_address = self.dest_input.text().strip()
-        driver_ids = self._selected_driver_ids()
-        passenger_ids = self._selected_passenger_ids()
-        core_passenger_ids = [
-            pid for pid in passenger_ids if self._is_core_member(pid) and pid not in driver_ids
-        ]
-
-        if not driver_ids or not passenger_ids:
-            QMessageBox.warning(
-                self,
-                "Invalid Selection",
-                "Please ensure at least one driver and one passenger are selected.",
-            )
-            return
-        if not core_passenger_ids:
-            QMessageBox.warning(
-                self,
-                "No Core Members",
-                "Select at least one core team member as a passenger to share the ride cost.",
-            )
-            return
-
-        flat_fee = float(self.flat_fee_input.value())
-        per_km_fee = float(self.per_km_input.value())
-
         total_cost = self._current_total_cost
         if total_cost is None:
-            QMessageBox.information(
-                self,
-                "Calculate First",
-                "Please calculate the ride cost before saving.",
+            self.validation_banner.show_message(
+                "Run the cost calculation before saving so the totals are up to date.",
+                severity="warning",
             )
+            self.summary_section.set_expanded(True)
             return
 
+        core_passenger_ids = form_state["core_passenger_ids"]
         cost_per_passenger = round(total_cost / len(core_passenger_ids), 2)
         self._current_cost_per_passenger = cost_per_passenger
 
         try:
             self.db_manager.record_ride(
-                start_address=start_address,
-                destination_address=destination_address,
+                start_address=form_state["start_address"],
+                destination_address=form_state["destination_address"],
                 distance_km=self._current_distance,
-                driver_ids=driver_ids,
-                passenger_ids=passenger_ids,
+                driver_ids=form_state["driver_ids"],
+                passenger_ids=form_state["passenger_ids"],
                 paying_passenger_ids=core_passenger_ids,
-                flat_fee=flat_fee,
-                fee_per_km=per_km_fee,
+                flat_fee=form_state["flat_fee"],
+                fee_per_km=form_state["per_km_fee"],
                 total_cost=total_cost,
                 cost_per_passenger=cost_per_passenger,
             )
         except sqlite3.DatabaseError as exc:
-            QMessageBox.critical(
-                self,
-                "Database Error",
-                f"Failed to save ride: {exc}",
-            )
+            self.validation_banner.show_message(f"Failed to save the ride: {exc}", severity="error")
             return
 
         self._reset_form()
+        self.validation_banner.show_message("Ride saved and ledger updated.", severity="success")
         self.ride_saved.emit()
 
     def _reset_form(self) -> None:
@@ -1797,9 +2009,6 @@ class RideSetupTab(QWidget):
         self.distance_detail_label.setText(self._distance_detail_default)
         self.total_cost_detail_label.setText(self._total_cost_detail_default)
         self.cost_per_passenger_detail_label.setText(self._cost_per_passenger_detail_default)
-        self.distance_detail_label.setText(self._distance_detail_default)
-        self.total_cost_detail_label.setText(self._total_cost_detail_default)
-        self.cost_per_passenger_detail_label.setText(self._cost_per_passenger_detail_default)
         self.save_button.setEnabled(False)
         self._current_distance = None
         self._current_total_cost = None
@@ -1807,8 +2016,18 @@ class RideSetupTab(QWidget):
         self._current_paying_passenger_ids = []
         self._current_all_passenger_ids = []
         self._current_driver_ids = []
+        for widget in (
+            self.start_input,
+            self.dest_input,
+            self.driver_list,
+            self.passenger_list,
+            self.flat_fee_input,
+            self.per_km_input,
+        ):
+            self._clear_invalid(widget)
 
     def _invalidate_calculation(self) -> None:
+        was_ready = self._current_distance is not None or self.save_button.isEnabled()
         self.save_button.setEnabled(False)
         self._current_distance = None
         self._current_total_cost = None
@@ -1819,6 +2038,11 @@ class RideSetupTab(QWidget):
         self.distance_value.setText("—")
         self.total_cost_value.setText("—")
         self.cost_per_passenger_value.setText("—")
+        if was_ready:
+            self.validation_banner.show_message(
+                "Selections changed. Re-run the cost calculation to refresh totals.",
+                severity="info",
+            )
 
 
 class RideHistoryTab(QWidget):
