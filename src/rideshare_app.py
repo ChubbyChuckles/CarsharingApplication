@@ -27,6 +27,7 @@ import sqlite3
 import sys
 from dataclasses import dataclass
 from datetime import datetime
+from itertools import count
 from pathlib import Path
 from typing import Any, Callable, Iterable, List, Optional, Sequence
 
@@ -45,7 +46,16 @@ from PyQt6.QtCore import (
     QPoint,
     QRegularExpression,
 )
-from PyQt6.QtGui import QColor, QFont, QRegularExpressionValidator, QValidator, QResizeEvent
+from PyQt6.QtGui import (
+    QColor,
+    QFont,
+    QRegularExpressionValidator,
+    QValidator,
+    QResizeEvent,
+    QShortcut,
+    QBrush,
+    QKeySequence,
+)
 from PyQt6.QtWidgets import (
     QApplication,
     QAbstractItemView,
@@ -66,11 +76,13 @@ from PyQt6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QSplitter,
     QSizeGrip,
     QSizePolicy,
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
+    QTextEdit,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -896,10 +908,203 @@ def _refresh_widget_style(widget: QWidget) -> None:
     widget.update()
 
 
+@dataclass
+class NotificationEntry:
+    entry_id: int
+    created_at: datetime
+    severity: str
+    title: str
+    message: str
+
+
+class NotificationCenter(QWidget):
+    """Display and persist recent application notifications."""
+
+    unread_changed = pyqtSignal(int)
+
+    _SEVERITY_COLORS: dict[str, str] = {
+        "info": "#61bdf2",
+        "success": "#46c38d",
+        "warning": "#f0c674",
+        "error": "#ff8080",
+    }
+    _SEVERITY_LABELS: dict[str, str] = {
+        "info": "Info",
+        "success": "Success",
+        "warning": "Warning",
+        "error": "Error",
+    }
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("NotificationCenter")
+        self._entries: list[NotificationEntry] = []
+        self._next_id = count(1)
+        self._unread = 0
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(14)
+
+        header_layout = QHBoxLayout()
+        header_layout.setSpacing(10)
+        self._header_label = QLabel("Activity Stream (0)")
+        self._header_label.setProperty("role", "sectionLabel")
+        header_layout.addWidget(self._header_label)
+        header_layout.addStretch(1)
+        self._unread_badge = QLabel("")
+        self._unread_badge.setProperty("role", "hint")
+        header_layout.addWidget(self._unread_badge)
+        self._clear_button = QPushButton("Clear log")
+        self._clear_button.setEnabled(False)
+        self._clear_button.clicked.connect(self._clear_entries)
+        header_layout.addWidget(self._clear_button)
+        layout.addLayout(header_layout)
+
+        filter_layout = QHBoxLayout()
+        filter_layout.setSpacing(8)
+        filter_label = QLabel("Filter")
+        filter_label.setProperty("role", "hint")
+        filter_layout.addWidget(filter_label)
+        self._filter_combo = QComboBox()
+        self._filter_combo.addItem("All events", None)
+        self._filter_combo.addItem("Info", "info")
+        self._filter_combo.addItem("Success", "success")
+        self._filter_combo.addItem("Warning", "warning")
+        self._filter_combo.addItem("Error", "error")
+        self._filter_combo.currentIndexChanged.connect(self._refresh_entries)
+        filter_layout.addWidget(self._filter_combo)
+        filter_layout.addStretch(1)
+        layout.addLayout(filter_layout)
+
+        self._list = QListWidget()
+        self._list.setObjectName("NotificationList")
+        self._list.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
+        self._list.itemSelectionChanged.connect(self._on_selection_changed)
+        layout.addWidget(self._list, 2)
+
+        self._empty_label = QLabel("No notifications yet. Activity will appear here.")
+        self._empty_label.setProperty("role", "hint")
+        self._empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._empty_label.setWordWrap(True)
+        layout.addWidget(self._empty_label)
+
+        self._detail = QTextEdit()
+        self._detail.setReadOnly(True)
+        self._detail.setMinimumHeight(140)
+        self._detail.setObjectName("NotificationDetail")
+        layout.addWidget(self._detail, 1)
+
+        self._update_placeholders(0)
+
+    # Public API ------------------------------------------------------
+    def add_entry(self, severity: str, title: str, message: str) -> None:
+        entry = NotificationEntry(next(self._next_id), datetime.now(), severity, title, message)
+        self._entries.insert(0, entry)
+        self._unread += 1
+        self.unread_changed.emit(self._unread)
+        self._refresh_entries(preserve_selection=False)
+
+    def mark_all_read(self) -> None:
+        if self._unread:
+            self._unread = 0
+            self.unread_changed.emit(0)
+            self._update_unread_badge()
+
+    # Internal helpers ------------------------------------------------
+    def _clear_entries(self) -> None:
+        self._entries.clear()
+        self._list.clear()
+        self._detail.clear()
+        self._unread = 0
+        self.unread_changed.emit(0)
+        self._update_placeholders(0)
+
+    def _update_placeholders(self, filtered_count: int | None) -> None:
+        if filtered_count is None:
+            filtered_count = len(self._filtered_entries())
+        has_results = filtered_count > 0
+        self._empty_label.setVisible(not has_results)
+        if not has_results:
+            active_filter = self._filter_combo.currentData()
+            if active_filter is None:
+                self._empty_label.setText("No notifications yet. Activity will appear here.")
+            else:
+                label = self._SEVERITY_LABELS.get(active_filter, "events")
+                self._empty_label.setText(f"No {label.lower()} entries match this filter just yet.")
+        self._detail.setVisible(has_results)
+        self._clear_button.setEnabled(bool(self._entries))
+        self._header_label.setText(f"Activity Stream ({len(self._entries)})")
+        self._update_unread_badge()
+
+    def _update_unread_badge(self) -> None:
+        if self._unread:
+            self._unread_badge.setText(f"Unread: {self._unread}")
+        else:
+            self._unread_badge.clear()
+
+    def _filtered_entries(self) -> list[NotificationEntry]:
+        severity = self._filter_combo.currentData()
+        if severity is None:
+            return list(self._entries)
+        return [entry for entry in self._entries if entry.severity == severity]
+
+    def _refresh_entries(self, preserve_selection: bool = True) -> None:
+        filtered = self._filtered_entries()
+        selected_id: Optional[int] = None
+        if preserve_selection:
+            current_item = self._list.currentItem()
+            if current_item is not None:
+                selected_id = current_item.data(Qt.ItemDataRole.UserRole)
+
+        self._list.blockSignals(True)
+        self._list.clear()
+        for entry in filtered:
+            display_time = entry.created_at.strftime("%H:%M:%S")
+            severity_label = self._SEVERITY_LABELS.get(entry.severity, entry.severity.title())
+            item = QListWidgetItem(f"[{display_time}] {severity_label} · {entry.title}")
+            item.setData(Qt.ItemDataRole.UserRole, entry.entry_id)
+            item.setData(Qt.ItemDataRole.UserRole + 1, entry)
+            color_hex = self._SEVERITY_COLORS.get(entry.severity)
+            if color_hex:
+                item.setForeground(QBrush(QColor(color_hex)))
+            self._list.addItem(item)
+        self._list.blockSignals(False)
+
+        if filtered:
+            row_to_select = 0
+            if selected_id is not None:
+                for index in range(self._list.count()):
+                    item = self._list.item(index)
+                    if item.data(Qt.ItemDataRole.UserRole) == selected_id:
+                        row_to_select = index
+                        break
+            self._list.setCurrentRow(row_to_select)
+        else:
+            self._detail.clear()
+
+        self._update_placeholders(len(filtered))
+
+    def _on_selection_changed(self) -> None:
+        item = self._list.currentItem()
+        if item is None:
+            self._detail.clear()
+            return
+        entry = item.data(Qt.ItemDataRole.UserRole + 1)
+        if not isinstance(entry, NotificationEntry):
+            self._detail.clear()
+            return
+        timestamp = entry.created_at.strftime("%Y-%m-%d %H:%M:%S")
+        severity_label = self._SEVERITY_LABELS.get(entry.severity, entry.severity.title())
+        detail = f"{severity_label} · {timestamp}\n" f"Source: {entry.title}\n\n" f"{entry.message}"
+        self._detail.setPlainText(detail)
+
+
 class TeamManagementTab(QWidget):
     """Widget responsible for CRUD operations on team members."""
 
     members_changed = pyqtSignal(list)
+    activity_event = pyqtSignal(str, str, str)
 
     def __init__(self, db_manager: DatabaseManager, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -1001,6 +1206,9 @@ class TeamManagementTab(QWidget):
         self.delete_button.clicked.connect(self._on_delete_member)
         self.table.itemSelectionChanged.connect(self._on_table_selection_changed)
 
+    def _emit_activity(self, severity: str, title: str, message: str) -> None:
+        self.activity_event.emit(severity, title, message)
+
     def apply_settings(self, settings: dict[str, Any]) -> None:
         widths = settings.get("team_table_column_widths")
         if isinstance(widths, list) and widths:
@@ -1087,6 +1295,7 @@ class TeamManagementTab(QWidget):
             )
             self._mark_invalid(self.name_input, message)
             self.feedback_banner.show_message(message, severity="warning")
+            self._emit_activity("warning", "Roster validation", message)
             return None
         name = raw_text.strip()
         self._clear_invalid(self.name_input)
@@ -1096,12 +1305,14 @@ class TeamManagementTab(QWidget):
         name = self._validate_name()
         if not name:
             return
+        is_core = self._selected_type()
         try:
-            self.db_manager.add_team_member(name, self._selected_type())
+            self.db_manager.add_team_member(name, is_core)
         except sqlite3.IntegrityError:
             message = f"{name} is already on the roster. Try another name."
             self._mark_invalid(self.name_input, message)
             self.feedback_banner.show_message(message, severity="error")
+            self._emit_activity("error", "Roster update failed", message)
             return
         self.name_input.clear()
         self._set_type_combo(True)
@@ -1109,6 +1320,8 @@ class TeamManagementTab(QWidget):
         self.refresh_members()
         self.table.clearSelection()
         self.feedback_banner.show_message(f"Added {name} to the roster.", severity="success")
+        role_label = "core" if is_core else "reserve"
+        self._emit_activity("success", "Roster updated", f"Added {name} as a {role_label} member.")
 
     def _on_update_member(self) -> None:
         name = self._validate_name()
@@ -1118,15 +1331,16 @@ class TeamManagementTab(QWidget):
             message = "Select a team member in the table before updating."
             self._mark_invalid(self.table, message)
             self.feedback_banner.show_message(message, severity="warning")
+            self._emit_activity("warning", "Roster update", "Update cancelled: no member selected.")
             return
+        is_core = self._selected_type()
         try:
-            self.db_manager.update_team_member(
-                self._selected_member.member_id, name, self._selected_type()
-            )
+            self.db_manager.update_team_member(self._selected_member.member_id, name, is_core)
         except sqlite3.IntegrityError:
             message = f"{name} is already on the roster. Try another name."
             self._mark_invalid(self.name_input, message)
             self.feedback_banner.show_message(message, severity="error")
+            self._emit_activity("error", "Roster update failed", message)
             return
         self.name_input.clear()
         self._set_type_combo(True)
@@ -1135,12 +1349,19 @@ class TeamManagementTab(QWidget):
         self.table.clearSelection()
         self._clear_invalid(self.table)
         self.feedback_banner.show_message("Team member updated.", severity="success")
+        role_label = "core" if is_core else "reserve"
+        self._emit_activity(
+            "success", "Roster updated", f"Updated details for {name} ({role_label})."
+        )
 
     def _on_delete_member(self) -> None:
         if self._selected_member is None:
             message = "Select a team member in the table before deleting."
             self._mark_invalid(self.table, message)
             self.feedback_banner.show_message(message, severity="warning")
+            self._emit_activity(
+                "warning", "Roster update", "Deletion cancelled: no member selected."
+            )
             return
         try:
             self.db_manager.delete_team_member(self._selected_member.member_id)
@@ -1149,7 +1370,9 @@ class TeamManagementTab(QWidget):
                 f"{self._selected_member.name} is linked to existing rides and cannot be removed."
             )
             self.feedback_banner.show_message(message, severity="error")
+            self._emit_activity("error", "Roster update failed", message)
             return
+        deleted_name = self._selected_member.name
         self._selected_member = None
         self.name_input.clear()
         self._set_type_combo(True)
@@ -1157,6 +1380,7 @@ class TeamManagementTab(QWidget):
         self.table.clearSelection()
         self._clear_invalid(self.table)
         self.feedback_banner.show_message("Team member deleted.", severity="success")
+        self._emit_activity("success", "Roster updated", f"Removed {deleted_name} from the roster.")
 
     def _on_table_selection_changed(self) -> None:
         items = self.table.selectedItems()
@@ -1210,6 +1434,7 @@ class RideSetupTab(QWidget):
     """Configure and persist new rides, including cost calculations."""
 
     ride_saved = pyqtSignal()
+    activity_event = pyqtSignal(str, str, str)
 
     def __init__(
         self,
@@ -1868,6 +2093,9 @@ class RideSetupTab(QWidget):
             return None, errors
         return state, []
 
+    def _emit_activity(self, severity: str, title: str, message: str) -> None:
+        self.activity_event.emit(severity, title, message)
+
     def _mark_invalid(self, widget: QWidget, message: str | None = None) -> None:
         widget.setProperty("validationState", "error")
         if message:
@@ -1897,18 +2125,30 @@ class RideSetupTab(QWidget):
 
     # Event handlers ------------------------------------------------------
     def _on_api_error(self, message: str) -> None:
-        self.validation_banner.show_message(f"Google Maps error: {message}", severity="error")
+        detail = f"Google Maps error: {message}"
+        self.validation_banner.show_message(detail, severity="error")
+        self._emit_activity("error", "Google Maps autocomplete", detail)
 
     def _on_calculate_clicked(self) -> None:
         form_state, errors = self._collect_form_state()
         if errors:
             self.validation_banner.show_messages(errors, severity="warning")
+            self._emit_activity(
+                "warning",
+                "Ride save",
+                "Ride save blocked by validation errors in the form.",
+            )
             return
         if form_state is None:
             return
         self.calculate_button.setEnabled(False)
         self.validation_banner.show_message(
             "Calculating the latest route distance…", severity="info"
+        )
+        self._emit_activity(
+            "info",
+            "Route calculation",
+            f"Fetching distance for {form_state['start_address']} → {form_state['destination_address']}.",
         )
         worker = Worker(
             self.maps_handler.distance_km,
@@ -1975,12 +2215,20 @@ class RideSetupTab(QWidget):
             "Calculation updated. Review the totals, then save when you're ready.",
             severity="success",
         )
+        self._emit_activity(
+            "success",
+            "Route calculation",
+            (
+                f"Round trip {round_trip_distance:.2f} km · total cost €{total_cost:.2f} "
+                f"for {len(core_passenger_ids)} core passenger(s)."
+            ),
+        )
 
     def _on_calculate_error(self, message: str) -> None:
         self.calculate_button.setEnabled(True)
-        self.validation_banner.show_message(
-            f"Unable to calculate the route: {message}", severity="error"
-        )
+        detail = f"Unable to calculate the route: {message}"
+        self.validation_banner.show_message(detail, severity="error")
+        self._emit_activity("error", "Route calculation", detail)
 
     def _on_save_clicked(self) -> None:
         form_state, errors = self._collect_form_state()
@@ -1995,6 +2243,11 @@ class RideSetupTab(QWidget):
                 severity="warning",
             )
             self.summary_section.set_expanded(True)
+            self._emit_activity(
+                "warning",
+                "Ride save",
+                "Save cancelled because the route calculation hasn't been run.",
+            )
             return
         total_cost = self._current_total_cost
         if total_cost is None:
@@ -2003,6 +2256,11 @@ class RideSetupTab(QWidget):
                 severity="warning",
             )
             self.summary_section.set_expanded(True)
+            self._emit_activity(
+                "warning",
+                "Ride save",
+                "Save cancelled because route totals are unavailable.",
+            )
             return
 
         core_passenger_ids = form_state["core_passenger_ids"]
@@ -2023,12 +2281,22 @@ class RideSetupTab(QWidget):
                 cost_per_passenger=cost_per_passenger,
             )
         except sqlite3.DatabaseError as exc:
-            self.validation_banner.show_message(f"Failed to save the ride: {exc}", severity="error")
+            detail = f"Failed to save the ride: {exc}"
+            self.validation_banner.show_message(detail, severity="error")
+            self._emit_activity("error", "Ride save", detail)
             return
 
         self._reset_form()
         self.validation_banner.show_message("Ride saved and ledger updated.", severity="success")
         self.ride_saved.emit()
+        self._emit_activity(
+            "success",
+            "Ride saved",
+            (
+                f"Logged ride {form_state['start_address']} → {form_state['destination_address']} "
+                f"for €{total_cost:.2f}."
+            ),
+        )
 
     def _reset_form(self) -> None:
         if self._default_home_address:
@@ -2082,12 +2350,18 @@ class RideSetupTab(QWidget):
                 "Selections changed. Re-run the cost calculation to refresh totals.",
                 severity="info",
             )
+            self._emit_activity(
+                "info",
+                "Route calculation",
+                "Ride inputs changed after a calculation. Totals cleared until you recalculate.",
+            )
 
 
 class RideHistoryTab(QWidget):
     """Display past rides and current ledger balances."""
 
     ride_deleted = pyqtSignal()
+    activity_event = pyqtSignal(str, str, str)
 
     def __init__(self, db_manager: DatabaseManager, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -2265,6 +2539,9 @@ class RideHistoryTab(QWidget):
 
         self.rides_table.itemSelectionChanged.connect(self._update_delete_button_state)
 
+    def _emit_activity(self, severity: str, title: str, message: str) -> None:
+        self.activity_event.emit(severity, title, message)
+
     def _create_summary_card(
         self,
         title: str,
@@ -2441,6 +2718,11 @@ class RideHistoryTab(QWidget):
                 "Nothing to Export",
                 "There are no ledger entries to export right now.",
             )
+            self._emit_activity(
+                "warning",
+                "Ledger export",
+                "Export skipped because there are no ledger entries to include.",
+            )
             return
 
         default_name = f"rideshare_ledger_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf"
@@ -2451,10 +2733,21 @@ class RideHistoryTab(QWidget):
             "PDF Files (*.pdf)",
         )
         if not file_name:
+            self._emit_activity(
+                "info",
+                "Ledger export",
+                "Export cancelled before choosing a destination file.",
+            )
             return
 
         ledger_details = self.db_manager.fetch_ledger_details()
         all_rides = self.db_manager.fetch_rides_with_passengers(limit=None)
+
+        self._emit_activity(
+            "info",
+            "Ledger export",
+            f"Building ledger PDF with {len(self._ledger_entries)} summary rows.",
+        )
 
         try:
             result_path = export_ledger_pdf(
@@ -2469,12 +2762,18 @@ class RideHistoryTab(QWidget):
                 "Export Failed",
                 f"The ledger could not be exported.\n\nDetails: {exc}",
             )
+            self._emit_activity("error", "Ledger export", f"Export failed: {exc}")
             return
 
         QMessageBox.information(
             self,
             "Export Complete",
             f"Ledger exported successfully to:\n{result_path}",
+        )
+        self._emit_activity(
+            "success",
+            "Ledger export",
+            f"Ledger PDF saved to {result_path}",
         )
 
     def _selected_ride_id(self) -> Optional[int]:
@@ -2493,16 +2792,27 @@ class RideHistoryTab(QWidget):
         self.delete_button.setEnabled(self._selected_ride_id() is not None)
 
     def _on_delete_clicked(self) -> None:
+        row = self.rides_table.currentRow()
         ride_id = self._selected_ride_id()
-        if ride_id is None:
+        if ride_id is None or row < 0:
             return
         try:
             self.db_manager.delete_ride(ride_id)
         except sqlite3.DatabaseError as exc:
             QMessageBox.critical(self, "Database Error", f"Failed to delete ride: {exc}")
+            self._emit_activity(
+                "error", "Ride deletion", f"Failed to delete ride #{ride_id}: {exc}"
+            )
             return
+        start_label = self.rides_table.item(row, 3)
+        dest_label = self.rides_table.item(row, 4)
+        summary = None
+        if start_label and dest_label:
+            summary = f"{start_label.text()} → {dest_label.text()}"
         self.refresh()
         self.ride_deleted.emit()
+        details = summary if summary else f"ride #{ride_id}"
+        self._emit_activity("success", "Ride deletion", f"Removed {details} from history.")
 
     @staticmethod
     def _set_table_item(
@@ -2548,6 +2858,12 @@ class WindowTitleBar(QWidget):
         layout.addWidget(self.title_label)
         layout.addStretch(1)
 
+        self.notification_button = self._make_button(
+            "🔔", "Activity center (Ctrl+Shift+N)", "ChromeNotifyButton"
+        )
+        self.notification_button.setCheckable(True)
+        layout.addWidget(self.notification_button)
+
         self.min_button = self._make_button("–", "Minimize", "ChromeMinButton")
         self.max_button = self._make_button("⬜", "Maximize", "ChromeMaxButton")
         self.close_button = self._make_button("×", "Close", "ChromeCloseButton")
@@ -2559,6 +2875,7 @@ class WindowTitleBar(QWidget):
         self.min_button.clicked.connect(self._window.showMinimized)
         self.max_button.clicked.connect(self._window.toggle_max_restore)
         self.close_button.clicked.connect(self._window.close)
+        self.set_notification_badge(0)
 
         self.setStyleSheet(
             """
@@ -2586,6 +2903,13 @@ class WindowTitleBar(QWidget):
                 background-color: #d64545;
                 color: #ffffff;
             }
+            QPushButton#ChromeNotifyButton[chrome="true"][panelVisible="true"] {
+                background-color: #203045;
+            }
+            QPushButton#ChromeNotifyButton[chrome="true"][hasUnread="true"] {
+                color: #ffd27d;
+                font-weight: 600;
+            }
             """
         )
 
@@ -2597,6 +2921,12 @@ class WindowTitleBar(QWidget):
         button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         button.setToolTip(tooltip)
         return button
+
+    def _refresh_button_style(self, button: QPushButton) -> None:
+        style = button.style()
+        style.unpolish(button)
+        style.polish(button)
+        button.update()
 
     def set_title(self, title: str) -> None:
         self.title_label.setText(title)
@@ -2635,6 +2965,26 @@ class WindowTitleBar(QWidget):
             event.accept()
             return
         super().mouseReleaseEvent(event)
+
+    def set_notification_badge(self, count: int) -> None:
+        has_unread = count > 0
+        text = "🔔" if not has_unread else f"🔔 {count}"
+        self.notification_button.setText(text)
+        self.notification_button.setProperty("hasUnread", has_unread)
+        if has_unread:
+            tooltip = (
+                f"{count} unread alert{'s' if count != 1 else ''}. "
+                "Toggle activity center (Ctrl+Shift+N)"
+            )
+        else:
+            tooltip = "Activity center (Ctrl+Shift+N)"
+        self.notification_button.setToolTip(tooltip)
+        self._refresh_button_style(self.notification_button)
+
+    def set_activity_panel_visible(self, visible: bool) -> None:
+        self.notification_button.setChecked(visible)
+        self.notification_button.setProperty("panelVisible", visible)
+        self._refresh_button_style(self.notification_button)
 
 
 class RideShareApp(QMainWindow):
@@ -2683,8 +3033,44 @@ class RideShareApp(QMainWindow):
         self.title_bar = WindowTitleBar(self)
         chrome_layout.addWidget(self.title_bar)
 
+        self._content_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._content_splitter.setObjectName("ContentSplitter")
+        self._content_splitter.setChildrenCollapsible(False)
+        self._content_splitter.setHandleWidth(1)
+
         self.tabs = QTabWidget()
-        chrome_layout.addWidget(self.tabs, 1)
+        self._content_splitter.addWidget(self.tabs)
+
+        activity_panel = QWidget()
+        activity_panel.setObjectName("ActivityPanel")
+        activity_layout = QVBoxLayout(activity_panel)
+        activity_layout.setContentsMargins(16, 16, 16, 16)
+        activity_layout.setSpacing(12)
+
+        activity_header = QHBoxLayout()
+        activity_header.setSpacing(8)
+        activity_label = QLabel("Activity & alerts")
+        activity_label.setProperty("role", "sectionLabel")
+        activity_header.addWidget(activity_label)
+        activity_header.addStretch(1)
+        activity_layout.addLayout(activity_header)
+
+        sublabel = QLabel("System notifications, exports, and background tasks stay here.")
+        sublabel.setWordWrap(True)
+        sublabel.setProperty("role", "hint")
+        activity_layout.addWidget(sublabel)
+
+        self.notification_center = NotificationCenter()
+        activity_layout.addWidget(self.notification_center, 1)
+
+        self._content_splitter.addWidget(activity_panel)
+        self._content_splitter.setStretchFactor(0, 4)
+        self._content_splitter.setStretchFactor(1, 2)
+        self._content_splitter.setSizes([780, 320])
+        chrome_layout.addWidget(self._content_splitter, 1)
+
+        self._notification_visible = True
+        self._last_splitter_sizes = self._content_splitter.sizes()
 
         grip_container = QWidget(self._chrome_body)
         grip_container.setFixedHeight(24)
@@ -2719,6 +3105,16 @@ class RideShareApp(QMainWindow):
         self.team_tab.members_changed.connect(self._on_members_changed)
         self.ride_tab.ride_saved.connect(self._on_ride_saved)
         self.history_tab.ride_deleted.connect(self._on_ride_deleted)
+        self.team_tab.activity_event.connect(self._log_activity)
+        self.ride_tab.activity_event.connect(self._log_activity)
+        self.history_tab.activity_event.connect(self._log_activity)
+
+        self.notification_center.unread_changed.connect(self._on_notification_unread_changed)
+        self.title_bar.notification_button.clicked.connect(self._toggle_notification_panel)
+        self.title_bar.set_activity_panel_visible(True)
+        self._notification_shortcut = QShortcut(QKeySequence("Ctrl+Shift+N"), self)
+        self._notification_shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
+        self._notification_shortcut.activated.connect(self._toggle_notification_panel)
 
         self._initialise_state()
 
@@ -2734,6 +3130,15 @@ class RideShareApp(QMainWindow):
         self.ride_tab.set_team_members(members)
         self.history_tab.refresh()
         self._refresh_recent_addresses()
+        self._log_activity(
+            "info",
+            "Local data sync",
+            (
+                f"Loaded {len(members)} team member{'s' if len(members) != 1 else ''} and refreshed "
+                "recent rides and addresses."
+            ),
+        )
+        self.notification_center.mark_all_read()
 
     def _on_members_changed(self, members: list[TeamMember]) -> None:
         self.ride_tab.set_team_members(members)
@@ -2746,12 +3151,49 @@ class RideShareApp(QMainWindow):
             addresses.get("start", []), addresses.get("destination", [])
         )
 
+    def _log_activity(self, severity: str, title: str, message: str) -> None:
+        if severity not in {"info", "success", "warning", "error"}:
+            severity = "info"
+        self.notification_center.add_entry(severity, title, message)
+        if self._notification_visible:
+            QTimer.singleShot(0, self.notification_center.mark_all_read)
+
+    def _on_notification_unread_changed(self, count: int) -> None:
+        self.title_bar.set_notification_badge(count)
+
+    def _toggle_notification_panel(self) -> None:
+        if self._notification_visible:
+            self._last_splitter_sizes = self._content_splitter.sizes()
+            self._content_splitter.setSizes([1, 0])
+            self._notification_visible = False
+        else:
+            sizes = getattr(self, "_last_splitter_sizes", None)
+            if not sizes or len(sizes) < 2 or sizes[1] <= 0:
+                total_width = max(self.width(), 960)
+                side_width = max(int(total_width * 0.28), 260)
+                sizes = [max(total_width - side_width, 520), side_width]
+            self._content_splitter.setSizes(sizes)
+            self._last_splitter_sizes = self._content_splitter.sizes()
+            self._notification_visible = True
+            QTimer.singleShot(0, self.notification_center.mark_all_read)
+        self.title_bar.set_activity_panel_visible(self._notification_visible)
+
     def _on_ride_saved(self) -> None:
         self.history_tab.refresh()
         self._refresh_recent_addresses()
+        self._log_activity(
+            "info",
+            "Background sync",
+            "Ride history and address shortcuts refreshed after saving a ride.",
+        )
 
     def _on_ride_deleted(self) -> None:
         self._refresh_recent_addresses()
+        self._log_activity(
+            "info",
+            "Background sync",
+            "Recent address lists refreshed after deleting a ride.",
+        )
 
     def toggle_max_restore(self) -> None:
         if self.isMaximized():

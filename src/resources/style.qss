@@ -232,3 +232,41 @@ QMessageBox QLabel {
 QMessageBox QPushButton {
     min-width: 90px;
 }
+
+QWidget#ActivityPanel {
+    background-color: #111a2b;
+    border-left: 1px solid #1f2d3d;
+    border-top-right-radius: 16px;
+    border-bottom-right-radius: 16px;
+}
+
+QWidget#NotificationCenter {
+    background-color: #101825;
+    border: 1px solid #1f2d3d;
+    border-radius: 12px;
+    padding: 8px;
+}
+
+QListWidget#NotificationList {
+    background-color: #131f30;
+    border: 1px solid #22324a;
+    border-radius: 10px;
+}
+
+QListWidget#NotificationList::item {
+    padding: 8px;
+}
+
+QListWidget#NotificationList::item:selected {
+    background: #1ba2a4;
+    color: #ffffff;
+    border-radius: 8px;
+}
+
+QTextEdit#NotificationDetail {
+    background-color: #111d2f;
+    border: 1px solid #25344c;
+    border-radius: 10px;
+    padding: 10px;
+    color: #d8e3f9;
+}

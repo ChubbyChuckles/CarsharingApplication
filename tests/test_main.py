@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Dict
 
 import pytest
+from PyQt6.QtTest import QSignalSpy
 from PyQt6.QtWidgets import QApplication, QMessageBox
 
 from src import rideshare_app
@@ -74,3 +75,31 @@ def test_main_exits_when_api_key_missing(monkeypatch: pytest.MonkeyPatch, tmp_pa
     app = QApplication.instance()
     if app is not None:
         app.quit()
+
+
+def test_notification_center_tracks_entries() -> None:
+    """Notification center should capture entries and manage unread counts."""
+
+    app = QApplication.instance() or QApplication([])
+    center = rideshare_app.NotificationCenter()
+
+    spy = QSignalSpy(center.unread_changed)
+    center.add_entry("success", "Export complete", "Ledger exported")
+    app.processEvents()
+
+    assert center._list.count() == 1  # type: ignore[attr-defined]
+    assert spy[-1][0] == 1
+
+    center._filter_combo.setCurrentIndex(center._filter_combo.findData("error"))  # type: ignore[attr-defined]
+    app.processEvents()
+    assert center._list.count() == 0  # type: ignore[attr-defined]
+
+    center._filter_combo.setCurrentIndex(0)  # type: ignore[attr-defined]
+    app.processEvents()
+    assert center._list.count() == 1  # type: ignore[attr-defined]
+
+    center.mark_all_read()
+    app.processEvents()
+    assert spy[-1][0] == 0
+
+    center.deleteLater()
