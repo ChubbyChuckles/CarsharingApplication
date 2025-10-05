@@ -1,5 +1,5 @@
 {
-  "default_home_address": "Franckestra\u00dfe 15, Leipzig-Ost, Germany",
+  "default_home_address": "Franckestraße 15, Leipzig-Ost, Germany",
   "default_flat_fee": 5.0,
   "default_fee_per_km": 0.35,
   "window_size": {
@@ -9,5 +9,8 @@
   "team_table_column_widths": [
     996,
     360
-  ]
+  ],
+  "onboarding": {
+    "completed": false
+  }
 }

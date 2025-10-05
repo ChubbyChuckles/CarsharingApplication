@@ -72,6 +72,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from .utils.onboarding import OnboardingAborted, maybe_run_onboarding
 from .utils.pdf_exporter import export_ledger_pdf
 
 
@@ -157,6 +158,8 @@ class SettingsManager:
         "default_fee_per_km": 0.5,
         "window_size": {"width": 1100, "height": 740},
         "team_table_column_widths": [420, 140],
+        "google_maps_api_key": "",
+        "onboarding": {"completed": False, "completed_at": None},
     }
 
     def __init__(self, path: Path) -> None:
@@ -1960,16 +1963,30 @@ def bootstrap_app() -> int:
     """
 
     load_dotenv()
-    api_key = os.getenv("GOOGLE_MAPS_API_KEY", "").strip()
-    db_manager = DatabaseManager(DATABASE_FILE)
-    maps_handler = GoogleMapsHandler(api_key)
     settings_manager = SettingsManager(SETTINGS_FILE)
+    stored_key = str(settings_manager.data.get("google_maps_api_key", "")).strip()
+    env_key = os.getenv("GOOGLE_MAPS_API_KEY", "").strip()
+    api_key = stored_key or env_key
+    db_manager = DatabaseManager(DATABASE_FILE)
 
     app = QApplication(sys.argv)
     app.setFont(QFont("Segoe UI", 10))
     stylesheet = load_stylesheet()
     if stylesheet:
         app.setStyleSheet(stylesheet)
+
+    try:
+        api_key = maybe_run_onboarding(
+            settings_data=settings_manager.data,
+            settings_manager=settings_manager,
+            db_manager=db_manager,
+            api_key=api_key,
+        )
+    except OnboardingAborted:
+        return 0
+
+    os.environ["GOOGLE_MAPS_API_KEY"] = api_key
+    maps_handler = GoogleMapsHandler(api_key)
 
     window = RideShareApp(db_manager, maps_handler, settings_manager)
     window.show()
