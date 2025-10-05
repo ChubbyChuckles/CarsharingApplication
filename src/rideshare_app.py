@@ -53,6 +53,8 @@ from PyQt6.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
+    QGridLayout,
     QGroupBox,
     QHeaderView,
     QHBoxLayout,
@@ -68,6 +70,7 @@ from PyQt6.QtWidgets import (
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -725,6 +728,78 @@ class AddressLineEdit(QLineEdit):
         self._model.setStringList(suggestions)
 
 
+class CollapsibleSection(QWidget):
+    """Reusable section widget with an expandable body for progressive disclosure."""
+
+    toggled = pyqtSignal(bool)
+
+    def __init__(
+        self,
+        title: str,
+        *,
+        description: str | None = None,
+        expanded: bool = False,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._expanded = expanded
+
+        self._toggle = QToolButton(self)
+        self._toggle.setCheckable(True)
+        self._toggle.setChecked(expanded)
+        self._toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self._toggle.setArrowType(Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
+        self._toggle.setText(title)
+        self._toggle.setProperty("collapsibleHeader", True)
+        self._toggle.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._toggle.toggled.connect(self._on_toggled)
+
+        self._description_label: QLabel | None = None
+        if description:
+            self._description_label = QLabel(description, self)
+            self._description_label.setWordWrap(True)
+            self._description_label.setProperty("role", "hint")
+
+        self._content_frame = QFrame(self)
+        self._content_frame.setFrameShape(QFrame.Shape.NoFrame)
+        self._content_layout = QVBoxLayout(self._content_frame)
+        self._content_layout.setContentsMargins(0, 0, 0, 0)
+        self._content_layout.setSpacing(16)
+        self._content_frame.setVisible(expanded)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        layout.addWidget(self._toggle)
+        if self._description_label is not None:
+            layout.addWidget(self._description_label)
+        layout.addWidget(self._content_frame)
+
+    def add_content_widget(self, widget: QWidget) -> None:
+        self._content_layout.addWidget(widget)
+
+    def add_layout(self, layout: QVBoxLayout | QHBoxLayout | QGridLayout | QFormLayout) -> None:
+        self._content_layout.addLayout(layout)
+
+    def set_expanded(self, expanded: bool) -> None:
+        if self._toggle.isChecked() != expanded:
+            self._toggle.setChecked(expanded)
+        else:
+            self._apply_visibility(expanded)
+
+    def is_expanded(self) -> bool:
+        return self._toggle.isChecked()
+
+    def _on_toggled(self, checked: bool) -> None:
+        self._apply_visibility(checked)
+        self.toggled.emit(checked)
+
+    def _apply_visibility(self, expanded: bool) -> None:
+        self._expanded = expanded
+        self._toggle.setArrowType(Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
+        self._content_frame.setVisible(expanded)
+
+
 class TeamManagementTab(QWidget):
     """Widget responsible for CRUD operations on team members."""
 
@@ -1063,6 +1138,14 @@ class RideSetupTab(QWidget):
         self.total_cost_value = QLabel("—")
         self.cost_per_passenger_value = QLabel("—")
 
+        self._distance_detail_default = "Run a calculation to pull the latest Google Maps data."
+        self._total_cost_detail_default = (
+            "Flat fees plus distance are split across your driver team."
+        )
+        self._cost_per_passenger_detail_default = (
+            "Core members divide the total once drivers are excluded."
+        )
+
         self._current_distance: Optional[float] = None
         self._current_total_cost: Optional[float] = None
         self._current_cost_per_passenger: Optional[float] = None
@@ -1075,54 +1158,241 @@ class RideSetupTab(QWidget):
 
     def _build_layout(self) -> None:
         layout = QVBoxLayout(self)
-        layout.setSpacing(24)
+        layout.setSpacing(18)
+        layout.setContentsMargins(0, 0, 0, 0)
 
-        addresses_group = QGroupBox("Addresses")
-        addr_layout = QFormLayout(addresses_group)
+        title = QLabel("Create a shared ride in four quick steps")
+        title.setProperty("role", "title")
+        layout.addWidget(title)
 
-        start_row_widget = QWidget()
-        start_row_layout = QHBoxLayout(start_row_widget)
+        subtitle = QLabel(
+            "Start with the route, confirm your drivers and passengers, adjust the tariffs, "
+            "then review the split before saving."
+        )
+        subtitle.setWordWrap(True)
+        subtitle.setProperty("role", "subtitle")
+        layout.addWidget(subtitle)
+
+        content_layout = QGridLayout()
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setHorizontalSpacing(20)
+        content_layout.setVerticalSpacing(20)
+        layout.addLayout(content_layout)
+
+        self.address_section = CollapsibleSection(
+            "Step 1 · Route details",
+            description="Capture where the ride begins and ends.",
+            expanded=True,
+        )
+        address_widget = QWidget()
+        address_grid = QGridLayout(address_widget)
+        address_grid.setContentsMargins(0, 0, 0, 0)
+        address_grid.setHorizontalSpacing(12)
+        address_grid.setVerticalSpacing(8)
+
+        start_label = QLabel("Start address")
+        start_label.setProperty("role", "sectionLabel")
+        address_grid.addWidget(start_label, 0, 0)
+
+        dest_label = QLabel("Destination")
+        dest_label.setProperty("role", "sectionLabel")
+        address_grid.addWidget(dest_label, 0, 1)
+
+        self.start_history_combo.setMinimumWidth(180)
+        self.start_history_combo.setToolTip("Select a start address from previous rides")
+        start_row = QWidget()
+        start_row_layout = QHBoxLayout(start_row)
         start_row_layout.setContentsMargins(0, 0, 0, 0)
         start_row_layout.setSpacing(8)
-        start_row_layout.addWidget(self.start_input)
-        self.start_history_combo.setMinimumWidth(200)
-        self.start_history_combo.setToolTip("Select a start address from previous rides")
-        start_row_layout.addWidget(self.start_history_combo)
-        addr_layout.addRow("Start Address", start_row_widget)
+        start_row_layout.addWidget(self.start_input, 1)
+        start_row_layout.addWidget(self.start_history_combo, 0)
+        address_grid.addWidget(start_row, 1, 0)
 
-        dest_row_widget = QWidget()
-        dest_row_layout = QHBoxLayout(dest_row_widget)
+        self.dest_history_combo.setMinimumWidth(180)
+        self.dest_history_combo.setToolTip("Select a destination from previous rides")
+        dest_row = QWidget()
+        dest_row_layout = QHBoxLayout(dest_row)
         dest_row_layout.setContentsMargins(0, 0, 0, 0)
         dest_row_layout.setSpacing(8)
-        dest_row_layout.addWidget(self.dest_input)
-        self.dest_history_combo.setMinimumWidth(200)
-        self.dest_history_combo.setToolTip("Select a destination from previous rides")
-        dest_row_layout.addWidget(self.dest_history_combo)
-        addr_layout.addRow("Destination", dest_row_widget)
-        layout.addWidget(addresses_group)
+        dest_row_layout.addWidget(self.dest_input, 1)
+        dest_row_layout.addWidget(self.dest_history_combo, 0)
+        address_grid.addWidget(dest_row, 1, 1)
 
-        team_group = QGroupBox("Team Selection")
-        team_layout = QFormLayout(team_group)
-        team_layout.addRow("Drivers", self.driver_list)
-        team_layout.addRow("Passengers", self.passenger_list)
-        layout.addWidget(team_group)
+        start_hint = QLabel("Tip: set a default home base in settings to auto-fill the start.")
+        start_hint.setWordWrap(True)
+        start_hint.setProperty("role", "hint")
+        address_grid.addWidget(start_hint, 2, 0)
 
-        fees_group = QGroupBox("Fees")
-        fees_layout = QFormLayout(fees_group)
-        fees_layout.addRow("Flat Fee (per Driver)", self.flat_fee_input)
-        fees_layout.addRow("Fee per km", self.per_km_input)
-        layout.addWidget(fees_group)
+        dest_hint = QLabel("Maps suggestions appear once you type three characters.")
+        dest_hint.setWordWrap(True)
+        dest_hint.setProperty("role", "hint")
+        address_grid.addWidget(dest_hint, 2, 1)
 
-        results_group = QGroupBox("Results")
-        results_layout = QFormLayout(results_group)
-        results_layout.addRow("Distance (km)", self.distance_value)
-        results_layout.addRow("Total Cost", self.total_cost_value)
-        results_layout.addRow("Cost per Passenger", self.cost_per_passenger_value)
-        layout.addWidget(results_group)
+        address_grid.setColumnStretch(0, 1)
+        address_grid.setColumnStretch(1, 1)
+        self.address_section.add_content_widget(address_widget)
+        content_layout.addWidget(self.address_section, 0, 0)
 
-        layout.addWidget(self.calculate_button)
-        layout.addWidget(self.save_button)
+        self.team_section = CollapsibleSection(
+            "Step 2 · Team",
+            description="Choose who drives and who shares the fare.",
+            expanded=True,
+        )
+        team_widget = QWidget()
+        team_layout = QVBoxLayout(team_widget)
+        team_layout.setContentsMargins(0, 0, 0, 0)
+        team_layout.setSpacing(12)
+
+        lists_widget = QWidget()
+        lists_layout = QHBoxLayout(lists_widget)
+        lists_layout.setContentsMargins(0, 0, 0, 0)
+        lists_layout.setSpacing(14)
+
+        driver_column = QVBoxLayout()
+        driver_label = QLabel("Drivers")
+        driver_label.setProperty("role", "sectionLabel")
+        driver_column.addWidget(driver_label)
+        self.driver_list.setMinimumHeight(200)
+        driver_column.addWidget(self.driver_list, 1)
+
+        passenger_column = QVBoxLayout()
+        passenger_label = QLabel("Passengers")
+        passenger_label.setProperty("role", "sectionLabel")
+        passenger_column.addWidget(passenger_label)
+        self.passenger_list.setMinimumHeight(200)
+        passenger_column.addWidget(self.passenger_list, 1)
+
+        lists_layout.addLayout(driver_column, 1)
+        lists_layout.addLayout(passenger_column, 1)
+        team_layout.addWidget(lists_widget)
+
+        team_hint = QLabel(
+            "Core members pay automatically. Selected drivers are excluded from passenger costs."
+        )
+        team_hint.setWordWrap(True)
+        team_hint.setProperty("role", "hint")
+        team_layout.addWidget(team_hint)
+
+        self.team_section.add_content_widget(team_widget)
+        content_layout.addWidget(self.team_section, 0, 1, 2, 1)
+
+        self.fees_section = CollapsibleSection(
+            "Step 3 · Fees",
+            description="Confirm tariffs for this ride — defaults come from settings.",
+            expanded=True,
+        )
+        fees_widget = QWidget()
+        fees_layout = QGridLayout(fees_widget)
+        fees_layout.setContentsMargins(0, 0, 0, 0)
+        fees_layout.setHorizontalSpacing(12)
+        fees_layout.setVerticalSpacing(10)
+
+        flat_label = QLabel("Flat fee per driver")
+        flat_label.setProperty("role", "sectionLabel")
+        fees_layout.addWidget(flat_label, 0, 0)
+        fees_layout.addWidget(self.flat_fee_input, 1, 0)
+
+        per_km_label = QLabel("Per kilometre")
+        per_km_label.setProperty("role", "sectionLabel")
+        fees_layout.addWidget(per_km_label, 0, 1)
+        fees_layout.addWidget(self.per_km_input, 1, 1)
+
+        fees_hint = QLabel("Include your shared maintenance or fuel costs here.")
+        fees_hint.setWordWrap(True)
+        fees_hint.setProperty("role", "hint")
+        fees_layout.addWidget(fees_hint, 2, 0, 1, 2)
+
+        fees_layout.setColumnStretch(0, 1)
+        fees_layout.setColumnStretch(1, 1)
+        self.fees_section.add_content_widget(fees_widget)
+        content_layout.addWidget(self.fees_section, 1, 0)
+
+        self.summary_section = CollapsibleSection(
+            "Step 4 · Review & save",
+            description="Calculate totals, then persist the ride to the ledger.",
+            expanded=True,
+        )
+
+        summary_widget = QWidget()
+        summary_layout = QVBoxLayout(summary_widget)
+        summary_layout.setContentsMargins(0, 0, 0, 0)
+        summary_layout.setSpacing(14)
+
+        cards_row = QHBoxLayout()
+        cards_row.setContentsMargins(0, 0, 0, 0)
+        cards_row.setSpacing(12)
+
+        distance_card, self.distance_detail_label = self._create_metric_card(
+            "Round trip distance",
+            self.distance_value,
+            self._distance_detail_default,
+        )
+        cards_row.addWidget(distance_card)
+
+        total_card, self.total_cost_detail_label = self._create_metric_card(
+            "Total ride cost",
+            self.total_cost_value,
+            self._total_cost_detail_default,
+        )
+        cards_row.addWidget(total_card)
+
+        passenger_card, self.cost_per_passenger_detail_label = self._create_metric_card(
+            "Cost per core passenger",
+            self.cost_per_passenger_value,
+            self._cost_per_passenger_detail_default,
+        )
+        cards_row.addWidget(passenger_card)
+
+        summary_layout.addLayout(cards_row)
+
+        actions_row = QHBoxLayout()
+        actions_row.setSpacing(10)
+        actions_row.addStretch()
+        actions_row.addWidget(self.calculate_button)
+        actions_row.addWidget(self.save_button)
+        summary_layout.addLayout(actions_row)
+
+        self.summary_section.add_content_widget(summary_widget)
+        content_layout.addWidget(self.summary_section, 2, 0, 1, 2)
+
+        content_layout.setColumnStretch(0, 1)
+        content_layout.setColumnStretch(1, 1)
+        content_layout.setRowStretch(0, 1)
+        content_layout.setRowStretch(1, 0)
+        content_layout.setRowStretch(2, 0)
+
         layout.addStretch(1)
+
+    def _create_metric_card(
+        self,
+        title: str,
+        value_label: QLabel,
+        default_detail: str,
+    ) -> tuple[QFrame, QLabel]:
+        value_label.setProperty("role", "metricValue")
+        value_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+
+        card = QFrame()
+        card.setProperty("card", True)
+        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(16, 14, 16, 14)
+        card_layout.setSpacing(6)
+
+        title_label = QLabel(title)
+        title_label.setProperty("role", "metricTitle")
+        card_layout.addWidget(title_label)
+
+        card_layout.addWidget(value_label)
+
+        detail_label = QLabel(default_detail)
+        detail_label.setWordWrap(True)
+        detail_label.setProperty("role", "metricDetail")
+        card_layout.addWidget(detail_label)
+
+        card_layout.addStretch(1)
+        return card, detail_label
 
     def _wire_signals(self) -> None:
         self.calculate_button.clicked.connect(self._on_calculate_clicked)
@@ -1366,7 +1636,17 @@ class RideSetupTab(QWidget):
         self.cost_per_passenger_value.setText(
             f"€{cost_per_passenger:.2f} per core member ({core_count} total, {driver_count} {driver_label})"
         )
+        self.distance_detail_label.setText(
+            f"{distance_km:.2f} km each way · {round_trip_distance:.2f} km round trip."
+        )
+        self.total_cost_detail_label.setText(
+            f"Flat: €{flat_fee:.2f} × {driver_count} + distance: €{distance_cost:.2f}."
+        )
+        self.cost_per_passenger_detail_label.setText(
+            f"Split across {core_count} core passenger{'s' if core_count != 1 else ''}."
+        )
         self.save_button.setEnabled(True)
+        self.summary_section.set_expanded(True)
 
     def _on_calculate_error(self, message: str) -> None:
         self.calculate_button.setEnabled(True)
@@ -1457,6 +1737,12 @@ class RideSetupTab(QWidget):
         self.distance_value.setText("—")
         self.total_cost_value.setText("—")
         self.cost_per_passenger_value.setText("—")
+        self.distance_detail_label.setText(self._distance_detail_default)
+        self.total_cost_detail_label.setText(self._total_cost_detail_default)
+        self.cost_per_passenger_detail_label.setText(self._cost_per_passenger_detail_default)
+        self.distance_detail_label.setText(self._distance_detail_default)
+        self.total_cost_detail_label.setText(self._total_cost_detail_default)
+        self.cost_per_passenger_detail_label.setText(self._cost_per_passenger_detail_default)
         self.save_button.setEnabled(False)
         self._current_distance = None
         self._current_total_cost = None
@@ -1487,6 +1773,7 @@ class RideHistoryTab(QWidget):
         super().__init__(parent)
         self.db_manager = db_manager
         self._ledger_entries: list[dict[str, Any]] = []
+        self._summary_labels: dict[str, tuple[QLabel, QLabel]] = {}
 
         self.rides_table = QTableWidget(0, 9)
         self.rides_table.setHorizontalHeaderLabels(
@@ -1506,7 +1793,8 @@ class RideHistoryTab(QWidget):
         self.rides_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.rides_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.rides_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.rides_table.itemSelectionChanged.connect(self._update_delete_button_state)
+        self.rides_table.setAlternatingRowColors(True)
+        self.rides_table.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         header = self.rides_table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         rides_vheader = self.rides_table.verticalHeader()
@@ -1521,39 +1809,155 @@ class RideHistoryTab(QWidget):
         self.ledger_table.verticalHeader().setVisible(False)
         self.ledger_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.ledger_table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
+        self.ledger_table.setAlternatingRowColors(True)
+        self.ledger_table.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         ledger_header = self.ledger_table.horizontalHeader()
         ledger_header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         ledger_vheader = self.ledger_table.verticalHeader()
         ledger_vheader.setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
         ledger_vheader.setDefaultSectionSize(28)
-        self.ledger_table.setWordWrap(False)
-        self.ledger_table.setAlternatingRowColors(True)
-        self.ledger_table.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.ledger_table.setMinimumHeight(
-            ledger_vheader.defaultSectionSize() * 14 + ledger_header.height() + 24
+            ledger_vheader.defaultSectionSize() * 10 + ledger_header.height() + 24
         )
 
         layout = QVBoxLayout(self)
-        layout.setSpacing(24)
-        header_layout = QHBoxLayout()
-        header_layout.addWidget(QLabel("Ride History (Last 3)"))
-        header_layout.addStretch()
-        self.delete_button = QPushButton("Delete Selected Ride")
+        layout.setSpacing(18)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        title = QLabel("Ledger overview")
+        title.setProperty("role", "title")
+        layout.addWidget(title)
+
+        subtitle = QLabel(
+            "Keep tabs on the latest rides and outstanding balances without scrolling through tables."
+        )
+        subtitle.setWordWrap(True)
+        subtitle.setProperty("role", "subtitle")
+        layout.addWidget(subtitle)
+
+        cards_container = QWidget()
+        cards_layout = QHBoxLayout(cards_container)
+        cards_layout.setContentsMargins(0, 0, 0, 0)
+        cards_layout.setSpacing(12)
+
+        outstanding_card, outstanding_value, outstanding_detail = self._create_summary_card(
+            "Outstanding balance",
+            "€0.00",
+            "All settled!",
+        )
+        cards_layout.addWidget(outstanding_card)
+        self._summary_labels["outstanding"] = (outstanding_value, outstanding_detail)
+
+        biggest_card, biggest_value, biggest_detail = self._create_summary_card(
+            "Largest balance",
+            "€0.00",
+            "No balances yet.",
+        )
+        cards_layout.addWidget(biggest_card)
+        self._summary_labels["largest"] = (biggest_value, biggest_detail)
+
+        latest_card, latest_value, latest_detail = self._create_summary_card(
+            "Latest ride",
+            "—",
+            "No rides saved yet.",
+        )
+        cards_layout.addWidget(latest_card)
+        self._summary_labels["latest"] = (latest_value, latest_detail)
+
+        cards_layout.addStretch(1)
+        layout.addWidget(cards_container)
+
+        self.rides_section = CollapsibleSection(
+            "Recent rides",
+            description="A snapshot of the last three rides recorded.",
+            expanded=True,
+        )
+        rides_content = QWidget()
+        rides_content_layout = QVBoxLayout(rides_content)
+        rides_content_layout.setContentsMargins(0, 0, 0, 0)
+        rides_content_layout.setSpacing(12)
+
+        rides_header = QHBoxLayout()
+        rides_header.setSpacing(10)
+        rides_heading = QLabel("Ride list")
+        rides_heading.setProperty("role", "sectionLabel")
+        rides_header.addWidget(rides_heading)
+        rides_header.addStretch()
+        self.delete_button = QPushButton("Delete selected ride")
         self.delete_button.setEnabled(False)
         self.delete_button.clicked.connect(self._on_delete_clicked)
-        header_layout.addWidget(self.delete_button)
-        layout.addLayout(header_layout)
-        layout.addWidget(self.rides_table)
-        layout.addWidget(QLabel("Net Ledger (All Rides)"))
-        layout.addWidget(self.ledger_table)
-        button_bar = QHBoxLayout()
-        button_bar.addStretch()
-        self.export_button = QPushButton("Export Ledger to PDF")
+        rides_header.addWidget(self.delete_button)
+        rides_content_layout.addLayout(rides_header)
+        rides_content_layout.addWidget(self.rides_table)
+        rides_hint = QLabel("Select a row to enable deletion and inspect who travelled together.")
+        rides_hint.setWordWrap(True)
+        rides_hint.setProperty("role", "hint")
+        rides_content_layout.addWidget(rides_hint)
+        self.rides_section.add_content_widget(rides_content)
+        layout.addWidget(self.rides_section)
+
+        self.ledger_section = CollapsibleSection(
+            "Ledger details",
+            description="Expand for the full outstanding balance matrix.",
+            expanded=False,
+        )
+        ledger_content = QWidget()
+        ledger_layout = QVBoxLayout(ledger_content)
+        ledger_layout.setContentsMargins(0, 0, 0, 0)
+        ledger_layout.setSpacing(12)
+
+        ledger_header_layout = QHBoxLayout()
+        ledger_header_layout.setSpacing(10)
+        ledger_heading = QLabel("Balances")
+        ledger_heading.setProperty("role", "sectionLabel")
+        ledger_header_layout.addWidget(ledger_heading)
+        ledger_header_layout.addStretch()
+        self.export_button = QPushButton("Export ledger to PDF")
         self.export_button.setEnabled(False)
         self.export_button.clicked.connect(self._on_export_ledger)
-        button_bar.addWidget(self.export_button)
-        layout.addLayout(button_bar)
+        ledger_header_layout.addWidget(self.export_button)
+        ledger_layout.addLayout(ledger_header_layout)
+        ledger_layout.addWidget(self.ledger_table)
+        ledger_hint = QLabel("Export to share a polished PDF summary with the team.")
+        ledger_hint.setWordWrap(True)
+        ledger_hint.setProperty("role", "hint")
+        ledger_layout.addWidget(ledger_hint)
+        self.ledger_section.add_content_widget(ledger_content)
+        layout.addWidget(self.ledger_section)
+
         layout.addStretch(1)
+
+        self.rides_table.itemSelectionChanged.connect(self._update_delete_button_state)
+
+    def _create_summary_card(
+        self,
+        title: str,
+        value_text: str,
+        detail_text: str,
+    ) -> tuple[QFrame, QLabel, QLabel]:
+        card = QFrame()
+        card.setProperty("card", True)
+        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(16, 14, 16, 14)
+        card_layout.setSpacing(6)
+
+        title_label = QLabel(title)
+        title_label.setProperty("role", "metricTitle")
+        card_layout.addWidget(title_label)
+
+        value_label = QLabel(value_text)
+        value_label.setProperty("role", "metricValue")
+        card_layout.addWidget(value_label)
+
+        detail_label = QLabel(detail_text)
+        detail_label.setWordWrap(True)
+        detail_label.setProperty("role", "metricDetail")
+        card_layout.addWidget(detail_label)
+
+        card_layout.addStretch(1)
+        return card, value_label, detail_label
 
     def refresh(self) -> None:
         rides = self.db_manager.fetch_rides_with_passengers(limit=3)
@@ -1589,6 +1993,45 @@ class RideHistoryTab(QWidget):
             self._set_table_item(self.ledger_table, row_idx, 1, entry["owed_name"])
             self._set_table_item(self.ledger_table, row_idx, 2, f"€{entry['amount']:.2f}")
         self.ledger_table.resizeRowsToContents()
+        self._update_summary_cards(rides, ledger_entries)
+
+    def _update_summary_cards(
+        self,
+        rides: list[dict[str, Any]],
+        ledger_entries: list[dict[str, Any]],
+    ) -> None:
+        outstanding_value, outstanding_detail = self._summary_labels["outstanding"]
+        total_outstanding = sum(entry["amount"] for entry in ledger_entries)
+        outstanding_value.setText(f"€{total_outstanding:.2f}")
+        outstanding_detail.setText(
+            "All settled!"
+            if not ledger_entries
+            else "Sum of outstanding balances across the roster."
+        )
+
+        largest_value, largest_detail = self._summary_labels["largest"]
+        if ledger_entries:
+            biggest = max(ledger_entries, key=lambda entry: entry["amount"])
+            largest_value.setText(f"€{biggest['amount']:.2f}")
+            largest_detail.setText(f"{biggest['owes_name']} → {biggest['owed_name']}")
+        else:
+            largest_value.setText("€0.00")
+            largest_detail.setText("No balances yet.")
+
+        latest_value, latest_detail = self._summary_labels["latest"]
+        if rides:
+            latest = rides[0]
+            latest_value.setText(self._format_datetime(latest["ride_datetime"]))
+            drivers = ", ".join(latest["drivers"]) if latest["drivers"] else "No drivers recorded"
+            passengers = (
+                ", ".join(latest["passengers"])
+                if latest["passengers"]
+                else "No passengers recorded"
+            )
+            latest_detail.setText(f"Drivers: {drivers}\nPassengers: {passengers}")
+        else:
+            latest_value.setText("—")
+            latest_detail.setText("No rides saved yet.")
 
     def _on_export_ledger(self) -> None:
         if not self._ledger_entries:
