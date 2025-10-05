@@ -13,7 +13,10 @@ if __package__ in (None, ""):
     package_root = Path(__file__).resolve().parent.parent
     if str(package_root) not in sys.path:
         sys.path.insert(0, str(package_root))
-    _rideshare = import_module("src.rideshare_app")
+    try:
+        _rideshare = import_module("src.rideshare_app")
+    except ModuleNotFoundError:
+        _rideshare = import_module("rideshare_app")
 else:  # pragma: no cover - import path depends on runtime context
     _rideshare = import_module(".rideshare_app", package=__package__)
 

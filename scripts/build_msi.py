@@ -85,7 +85,7 @@ def main() -> None:
     _prime_template_files()
     os.chdir(PROJECT_ROOT)
     build_options = {
-        "packages": ["PyQt6", "googlemaps", "dotenv"],
+        "packages": ["src", "PyQt6", "googlemaps", "dotenv"],
         "includes": ["sqlite3"],
         "include_files": list(_collect_include_files()),
         "excludes": ["tkinter"],
