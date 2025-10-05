@@ -8,7 +8,7 @@ from typing import Iterable, List, Sequence
 
 import sqlite3
 
-from PyQt6.QtCore import QPoint, Qt
+from PyQt6.QtCore import QPoint, Qt, QTimer
 from PyQt6.QtGui import QColor, QPalette
 from PyQt6.QtWidgets import (
     QDialog,
@@ -210,6 +210,8 @@ class _OnboardingWizardPages(QWizard):
             team_members=list(existing_members),
         )
         self._apply_theme()
+        QTimer.singleShot(0, self._neutralize_system_frames)
+        self.currentIdChanged.connect(lambda _id: self._neutralize_system_frames())
 
     def accept(self) -> None:  # type: ignore[override]
         self._result_data = OnboardingData(
@@ -229,6 +231,10 @@ class _OnboardingWizardPages(QWizard):
         page_background = QColor("#152133")
         text_color = QColor("#edf2fb")
 
+        self._background_color = background
+        self._page_background = page_background
+        self._text_color = text_color
+
         palette = self.palette()
         palette.setColor(QPalette.ColorRole.Window, background)
         palette.setColor(QPalette.ColorRole.Base, page_background)
@@ -238,18 +244,16 @@ class _OnboardingWizardPages(QWizard):
         palette.setColor(QPalette.ColorRole.ButtonText, text_color)
         palette.setColor(QPalette.ColorRole.Highlight, QColor("#35c4c7"))
         palette.setColor(QPalette.ColorRole.HighlightedText, QColor("#0f1724"))
+        palette.setColor(QPalette.ColorRole.Light, QColor("#1d2736"))
+        palette.setColor(QPalette.ColorRole.Midlight, QColor("#1a2435"))
+        palette.setColor(QPalette.ColorRole.Mid, QColor("#142032"))
+        palette.setColor(QPalette.ColorRole.Dark, QColor("#0a1320"))
+        palette.setColor(QPalette.ColorRole.Shadow, QColor("#050a14"))
+        palette.setColor(QPalette.ColorRole.AlternateBase, QColor("#151f30"))
         self.setPalette(palette)
         self.setAutoFillBackground(True)
 
-        for page in (self._intro_page, self._api_page, self._tariff_page, self._team_page):
-            page_palette = page.palette()
-            page_palette.setColor(QPalette.ColorRole.Window, page_background)
-            page_palette.setColor(QPalette.ColorRole.Base, page_background)
-            page_palette.setColor(QPalette.ColorRole.Text, text_color)
-            page_palette.setColor(QPalette.ColorRole.WindowText, text_color)
-            page.setPalette(page_palette)
-            page.setAutoFillBackground(True)
-            page.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self._apply_page_palettes()
 
         accent_start = "#1ba2a4"
         accent_end = "#3f6bcc"
@@ -268,9 +272,30 @@ class _OnboardingWizardPages(QWizard):
                 border: 1px solid #1d2736;
                 border-radius: 20px;
             }}
-            QWizard::header {{
+            QWizard QWidget#qt_wizard_titlebar,
+            QWizard QFrame#qt_wizard_titlebar,
+            QWizard QWidget#qt_wizard_header,
+            QWizard QFrame#qt_wizard_header {{
                 background-color: {background.name()};
+                border: none;
+                padding: 0px;
+            }}
+            QWizard::header {{
+                background: transparent;
+                border: none;
+                margin: 0px;
+                padding: 0px;
+            }}
+            QWizard QWidget#qt_wizard_header {{
                 border-bottom: 1px solid #24334a;
+            }}
+            QWizard QWidget#qt_wizard_titlebar {{
+                border-bottom: 1px solid #24334a;
+            }}
+            QWizard::separator {{
+                background-color: #1d2736;
+                height: 1px;
+                margin: 0px;
             }}
             QWizard::page {{
                 background-color: {page_background.name()};
@@ -284,6 +309,11 @@ class _OnboardingWizardPages(QWizard):
             QWizard::subtitle {{
                 color: #d6e3f5;
             }}
+            QWizard QLabel#qt_wizard_title,
+            QWizard QLabel#qt_wizard_subtitle {{
+                color: {text_color.name()};
+                background-color: transparent;
+            }}
             QWizardPage {{
                 background-color: {page_background.name()};
                 border: none;
@@ -292,6 +322,10 @@ class _OnboardingWizardPages(QWizard):
                 color: {text_color.name()};
                 background-color: transparent;
                 qproperty-wordWrap: true;
+            }}
+            QWizard QFrame {{
+                background-color: transparent;
+                border: none;
             }}
             QWizard QLineEdit,
             QWizard QPlainTextEdit,
@@ -359,6 +393,76 @@ class _OnboardingWizardPages(QWizard):
             }}
             """
         )
+
+        self._neutralize_system_frames()
+
+    def _apply_page_palettes(self) -> None:
+        page_background = getattr(self, "_page_background", QColor("#152133"))
+        text_color = getattr(self, "_text_color", QColor("#edf2fb"))
+        for page in (self._intro_page, self._api_page, self._tariff_page, self._team_page):
+            page_palette = page.palette()
+            page_palette.setColor(QPalette.ColorRole.Window, page_background)
+            page_palette.setColor(QPalette.ColorRole.Base, page_background)
+            page_palette.setColor(QPalette.ColorRole.Text, text_color)
+            page_palette.setColor(QPalette.ColorRole.WindowText, text_color)
+            page_palette.setColor(QPalette.ColorRole.Light, QColor("#1d2736"))
+            page_palette.setColor(QPalette.ColorRole.Midlight, QColor("#1a2435"))
+            page_palette.setColor(QPalette.ColorRole.Mid, QColor("#142032"))
+            page_palette.setColor(QPalette.ColorRole.Dark, QColor("#0a1320"))
+            page_palette.setColor(QPalette.ColorRole.Shadow, QColor("#050a14"))
+            page_palette.setColor(QPalette.ColorRole.AlternateBase, QColor("#151f30"))
+            page.setPalette(page_palette)
+            page.setAutoFillBackground(True)
+            page.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+
+    def _neutralize_system_frames(self) -> None:
+        background = getattr(self, "_background_color", QColor("#0f1724"))
+        page_background = getattr(self, "_page_background", QColor("#152133"))
+        for frame in self.findChildren(QFrame):
+            name = frame.objectName()
+            if name == "OnboardingCard":
+                continue
+            shape = frame.frameShape()
+            has_border = frame.lineWidth() > 0 or frame.midLineWidth() > 0
+            if shape in (QFrame.Shape.HLine, QFrame.Shape.VLine) or has_border:
+                frame.setFrameShape(QFrame.Shape.NoFrame)
+                frame.setLineWidth(0)
+                frame.setMidLineWidth(0)
+                frame.setStyleSheet("background-color: transparent; border: none;")
+
+        for container in self.findChildren(
+            QWidget, options=Qt.FindChildOption.FindDirectChildrenOnly
+        ):
+            if container is self:
+                continue
+            if container.objectName():
+                continue
+            if isinstance(container, QWizardPage):
+                continue
+            pal = container.palette()
+            win = pal.color(QPalette.ColorRole.Window)
+            if win.red() > 230 and win.green() > 230 and win.blue() > 230:
+                for role in (
+                    QPalette.ColorRole.Window,
+                    QPalette.ColorRole.Base,
+                    QPalette.ColorRole.Button,
+                    QPalette.ColorRole.Light,
+                    QPalette.ColorRole.Midlight,
+                    QPalette.ColorRole.Mid,
+                    QPalette.ColorRole.Dark,
+                    QPalette.ColorRole.Shadow,
+                    QPalette.ColorRole.AlternateBase,
+                ):
+                    pal.setColor(
+                        role, background if role != QPalette.ColorRole.Base else page_background
+                    )
+                container.setPalette(pal)
+                container.setAutoFillBackground(True)
+                container.setStyleSheet(
+                    f"background-color: {background.name()}; border-top: none; border-bottom: 1px solid #1d2736;"
+                )
+
+        self._apply_page_palettes()
 
 
 class OnboardingAborted(RuntimeError):
@@ -492,6 +596,7 @@ class OnboardingWizard(QDialog):
         )
         self._wizard.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         chrome_layout.addWidget(self._wizard, 1)
+        self._wizard._apply_page_palettes()
 
         self.setPalette(self._wizard.palette())
         self.setAutoFillBackground(True)
@@ -542,6 +647,7 @@ class OnboardingWizard(QDialog):
     def showEvent(self, event) -> None:  # type: ignore[override]
         super().showEvent(event)
         self._title_bar.set_title(self.windowTitle())
+        self._wizard._neutralize_system_frames()
 
     def _on_child_accepted(self) -> None:
         super().accept()
