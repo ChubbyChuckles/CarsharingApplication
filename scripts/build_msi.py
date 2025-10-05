@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import sys
 from pathlib import Path
 from typing import Iterable, Tuple
 
@@ -34,6 +35,9 @@ RESOURCES_ROOT = SRC_ROOT / "resources"
 BUNDLED_CONFIG = SRC_ROOT / "config" / "settings.json"
 BUNDLED_DATABASE = SRC_ROOT / "rideshare.db"
 BUILD_DIR = PROJECT_ROOT / "build" / "msi"
+
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 
 def _collect_include_files() -> Iterable[Tuple[str, str]]:
