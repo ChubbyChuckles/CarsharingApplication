@@ -1111,6 +1111,8 @@ class RideSetupTab(QWidget):
         self._style_history_combo(self.dest_history_combo)
         self._constrain_history_combo(self.start_history_combo)
         self._constrain_history_combo(self.dest_history_combo)
+        self._update_history_popup_width(self.start_history_combo)
+        self._update_history_popup_width(self.dest_history_combo)
 
         self.driver_list = QListWidget()
         self.driver_list.setSelectionMode(QListWidget.SelectionMode.MultiSelection)
@@ -1490,6 +1492,7 @@ class RideSetupTab(QWidget):
         combo.setEnabled(bool(addresses))
         combo.blockSignals(False)
         self._constrain_history_combo(combo)
+        self._update_history_popup_width(combo)
 
     def _style_history_combo(self, combo: QComboBox) -> None:
         combo.setStyleSheet(
@@ -1535,6 +1538,20 @@ class RideSetupTab(QWidget):
         policy.setHorizontalPolicy(QSizePolicy.Policy.Fixed)
         combo.setSizePolicy(policy)
         combo.setFixedWidth(width)
+
+    def _update_history_popup_width(self, combo: QComboBox) -> None:
+        view = combo.view()
+        if view is None:
+            return
+        metrics = view.fontMetrics()
+        longest = max(
+            (combo.itemText(index) for index in range(combo.count())), key=len, default=""
+        )
+        if not longest:
+            longest = "Select previous address…"
+        width = metrics.horizontalAdvance(longest) + 56
+        view.setMinimumWidth(width)
+        view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
 
     def _on_start_history_selected(self, index: int) -> None:
         address = self.start_history_combo.itemData(index)
