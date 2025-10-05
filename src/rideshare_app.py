@@ -1109,11 +1109,15 @@ class RideSetupTab(QWidget):
         self.dest_history_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
         self._style_history_combo(self.start_history_combo)
         self._style_history_combo(self.dest_history_combo)
+        self._constrain_history_combo(self.start_history_combo)
+        self._constrain_history_combo(self.dest_history_combo)
 
         self.driver_list = QListWidget()
         self.driver_list.setSelectionMode(QListWidget.SelectionMode.MultiSelection)
+        self.driver_list.setMaximumWidth(260)
         self.passenger_list = QListWidget()
         self.passenger_list.setSelectionMode(QListWidget.SelectionMode.MultiSelection)
+        self.passenger_list.setMaximumWidth(260)
 
         self.flat_fee_input = QDoubleSpinBox()
         self.flat_fee_input.setRange(0, 10000)
@@ -1155,6 +1159,7 @@ class RideSetupTab(QWidget):
 
         self._build_layout()
         self._wire_signals()
+        self._configure_focus_disclosure()
 
     def _build_layout(self) -> None:
         layout = QVBoxLayout(self)
@@ -1198,7 +1203,6 @@ class RideSetupTab(QWidget):
         dest_label.setProperty("role", "sectionLabel")
         address_grid.addWidget(dest_label, 0, 1)
 
-        self.start_history_combo.setMinimumWidth(180)
         self.start_history_combo.setToolTip("Select a start address from previous rides")
         start_row = QWidget()
         start_row_layout = QHBoxLayout(start_row)
@@ -1208,7 +1212,6 @@ class RideSetupTab(QWidget):
         start_row_layout.addWidget(self.start_history_combo, 0)
         address_grid.addWidget(start_row, 1, 0)
 
-        self.dest_history_combo.setMinimumWidth(180)
         self.dest_history_combo.setToolTip("Select a destination from previous rides")
         dest_row = QWidget()
         dest_row_layout = QHBoxLayout(dest_row)
@@ -1355,8 +1358,8 @@ class RideSetupTab(QWidget):
         self.summary_section.add_content_widget(summary_widget)
         content_layout.addWidget(self.summary_section, 2, 0, 1, 2)
 
-        content_layout.setColumnStretch(0, 1)
-        content_layout.setColumnStretch(1, 1)
+        content_layout.setColumnStretch(0, 5)
+        content_layout.setColumnStretch(1, 3)
         content_layout.setRowStretch(0, 1)
         content_layout.setRowStretch(1, 0)
         content_layout.setRowStretch(2, 0)
@@ -1405,6 +1408,33 @@ class RideSetupTab(QWidget):
         self.dest_input.textChanged.connect(self._invalidate_calculation)
         self.start_history_combo.currentIndexChanged.connect(self._on_start_history_selected)
         self.dest_history_combo.currentIndexChanged.connect(self._on_dest_history_selected)
+
+    def _configure_focus_disclosure(self) -> None:
+        self._section_focus_map: dict[QWidget, CollapsibleSection] = {
+            self.start_input: self.address_section,
+            self.dest_input: self.address_section,
+            self.start_history_combo: self.address_section,
+            self.dest_history_combo: self.address_section,
+            self.driver_list: self.team_section,
+            self.passenger_list: self.team_section,
+            self.flat_fee_input: self.fees_section,
+            self.per_km_input: self.fees_section,
+            self.calculate_button: self.summary_section,
+            self.save_button: self.summary_section,
+        }
+        for widget in self._section_focus_map.keys():
+            widget.installEventFilter(self)
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # type: ignore[override]
+        if event.type() == QEvent.Type.FocusIn:
+            section = (
+                self._section_focus_map.get(watched)
+                if hasattr(self, "_section_focus_map")
+                else None
+            )
+            if section is not None:
+                section.set_expanded(True)
+        return super().eventFilter(watched, event)
 
     # Public API ----------------------------------------------------------
     def set_team_members(self, members: list[TeamMember]) -> None:
@@ -1459,6 +1489,7 @@ class RideSetupTab(QWidget):
         combo.setCurrentIndex(0)
         combo.setEnabled(bool(addresses))
         combo.blockSignals(False)
+        self._constrain_history_combo(combo)
 
     def _style_history_combo(self, combo: QComboBox) -> None:
         combo.setStyleSheet(
@@ -1495,6 +1526,15 @@ class RideSetupTab(QWidget):
             )
         combo.setMaxVisibleItems(8)
         combo.setMinimumContentsLength(1)
+
+    def _constrain_history_combo(self, combo: QComboBox) -> None:
+        metrics = combo.fontMetrics()
+        default_text = "Select previous address…"
+        width = metrics.horizontalAdvance(default_text) + 48
+        policy = combo.sizePolicy()
+        policy.setHorizontalPolicy(QSizePolicy.Policy.Fixed)
+        combo.setSizePolicy(policy)
+        combo.setFixedWidth(width)
 
     def _on_start_history_selected(self, index: int) -> None:
         address = self.start_history_combo.itemData(index)
