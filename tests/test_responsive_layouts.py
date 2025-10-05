@@ -5,7 +5,13 @@ from typing import List, Tuple
 from PyQt6.QtCore import QThreadPool
 from PyQt6.QtWidgets import QApplication, QGridLayout
 
-from src.rideshare_app import DatabaseManager, RideHistoryTab, RideSetupTab, TeamMember
+from src.rideshare_app import (
+    DatabaseManager,
+    DistanceLookupResult,
+    RideHistoryTab,
+    RideSetupTab,
+    TeamMember,
+)
 
 
 @pytest.fixture(scope="module")
@@ -25,8 +31,8 @@ class _StubMapsHandler:
     enabled = True
 
     @staticmethod
-    def distance_km(_start: str, _destination: str) -> float:
-        return 4.2
+    def distance_km(_start: str, _destination: str) -> DistanceLookupResult:
+        return DistanceLookupResult(distance_km=4.2, from_cache=False, attempts=1)
 
     @staticmethod
     def autocomplete(_query: str) -> List[str]:

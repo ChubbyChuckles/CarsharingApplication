@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Iterable, List, Sequence
 
 import sqlite3
@@ -793,7 +793,7 @@ def maybe_run_onboarding(
             "google_maps_api_key": updated_api_key,
             "onboarding": {
                 "completed": True,
-                "completed_at": datetime.utcnow().isoformat(timespec="seconds"),
+                "completed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             },
         }
     )

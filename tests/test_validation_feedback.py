@@ -6,6 +6,7 @@ from PyQt6.QtWidgets import QApplication
 
 from src.rideshare_app import (
     DatabaseManager,
+    DistanceLookupResult,
     RideSetupTab,
     TeamManagementTab,
     TeamMember,
@@ -24,8 +25,8 @@ class _StubMapsHandler:
     enabled = True
 
     @staticmethod
-    def distance_km(_start: str, _destination: str) -> float:
-        return 4.2
+    def distance_km(_start: str, _destination: str) -> DistanceLookupResult:
+        return DistanceLookupResult(distance_km=4.2, from_cache=False, attempts=1)
 
     @staticmethod
     def autocomplete(_query: str) -> List[str]:
@@ -88,7 +89,7 @@ def test_ride_setup_validation_collects_errors_and_success(
     assert form_state is not None
 
     tab._on_distance_ready(
-        distance_km=5.0,
+        DistanceLookupResult(distance_km=5.0, from_cache=False, attempts=1),
         flat_fee=form_state["flat_fee"],
         per_km_fee=form_state["per_km_fee"],
         passenger_ids=form_state["passenger_ids"],

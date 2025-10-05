@@ -25,8 +25,9 @@ import os
 import shutil
 import sqlite3
 import sys
+import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from itertools import count
 from pathlib import Path
 from typing import Any, Callable, Iterable, List, Optional, Sequence
@@ -230,12 +231,27 @@ class Worker(QRunnable):
             self.signals.finished.emit(result)
 
 
+@dataclass(frozen=True)
+class DistanceLookupResult:
+    """Structured result for Google Maps distance lookups."""
+
+    distance_km: float
+    from_cache: bool
+    attempts: int
+    cached_at: Optional[datetime] = None
+    message: str = ""
+
+
 class GoogleMapsHandler:
     """Wrapper around the ``googlemaps`` client with helpful defaults."""
 
-    def __init__(self, api_key: str) -> None:
+    MAX_RETRIES = 3
+    RETRY_DELAY_SECONDS = 0.75
+
+    def __init__(self, api_key: str, db_manager: Optional["DatabaseManager"] = None) -> None:
         self.enabled = bool(api_key)
         self.client = None
+        self._db_manager = db_manager
         if not self.enabled:
             return
         try:
@@ -259,12 +275,70 @@ class GoogleMapsHandler:
             raise GoogleMapsError(f"Autocomplete request failed: {exc}") from exc
         return [item.get("description", "") for item in predictions]
 
-    def distance_km(self, origin: str, destination: str) -> float:
-        """Return the driving distance between two addresses in kilometres."""
-        if not self.enabled:
+    def distance_km(self, origin: str, destination: str) -> DistanceLookupResult:
+        """Return the driving distance between two addresses in kilometres.
+
+        Includes retry logic and falls back to cached distances when the API is
+        unavailable. The distance returned is one-way; callers should determine
+        round-trip totals separately.
+        """
+
+        origin_key = origin.strip()
+        destination_key = destination.strip()
+        if not origin_key or not destination_key:
+            raise GoogleMapsError("Both origin and destination addresses must be provided.")
+
+        # Attempt immediate cache when Maps access is unavailable.
+        if not self.enabled or self.client is None:
+            cached = self._fetch_cached_distance(origin_key, destination_key)
+            if cached is not None:
+                return cached
             raise GoogleMapsError(
                 "Google Maps API key is not configured. Distance lookup is disabled."
             )
+
+        last_error: Optional[GoogleMapsError] = None
+        for attempt in range(1, self.MAX_RETRIES + 1):
+            try:
+                distance_km = self._request_distance(origin_key, destination_key)
+            except GoogleMapsError as exc:  # pragma: no cover - exercised in tests
+                last_error = exc
+                if attempt < self.MAX_RETRIES:
+                    time.sleep(self.RETRY_DELAY_SECONDS)
+                continue
+            else:
+                self._store_distance(origin_key, destination_key, distance_km)
+                return DistanceLookupResult(
+                    distance_km=distance_km,
+                    from_cache=False,
+                    attempts=attempt,
+                )
+
+        cached_result = self._fetch_cached_distance(origin_key, destination_key)
+        if cached_result is not None:
+            fallback_reason = (
+                f"Falling back to cached route because the live lookup failed: {last_error}."
+                if last_error
+                else "Using cached route distance due to Google Maps connectivity issues."
+            )
+            combined_message = " ".join(
+                part.strip() for part in (cached_result.message, fallback_reason) if part
+            ).strip()
+            return DistanceLookupResult(
+                distance_km=cached_result.distance_km,
+                from_cache=True,
+                attempts=max(self.MAX_RETRIES, cached_result.attempts),
+                cached_at=cached_result.cached_at,
+                message=combined_message,
+            )
+
+        if last_error is not None:
+            raise last_error
+        raise GoogleMapsError("Distance lookup failed for an unknown reason.")
+
+    def _request_distance(self, origin: str, destination: str) -> float:
+        if self.client is None:
+            raise GoogleMapsError("Google Maps client is not available.")
         try:
             matrix = self.client.distance_matrix(
                 origins=[origin],
@@ -295,6 +369,44 @@ class GoogleMapsHandler:
         if distance_meters is None:
             raise GoogleMapsError("Distance value missing in Distance Matrix response.")
         return round(distance_meters / 1000.0, 2)
+
+    def _store_distance(self, origin: str, destination: str, distance_km: float) -> None:
+        if self._db_manager is None:
+            return
+        self._db_manager.upsert_route_cache(origin, destination, distance_km)
+        # Store the reverse direction as a helpful shortcut for future lookups.
+        self._db_manager.upsert_route_cache(destination, origin, distance_km)
+
+    def _fetch_cached_distance(
+        self, origin: str, destination: str
+    ) -> Optional[DistanceLookupResult]:
+        if self._db_manager is None:
+            return None
+        record = self._db_manager.fetch_route_cache(origin, destination)
+        reversed_match = False
+        if record is None:
+            record = self._db_manager.fetch_route_cache(destination, origin)
+            reversed_match = record is not None
+        if record is None:
+            return None
+
+        cached_at: Optional[datetime] = None
+        updated_at = record.get("updated_at")
+        if updated_at:
+            try:
+                cached_at = datetime.fromisoformat(str(updated_at))
+            except ValueError:  # pragma: no cover - defensive
+                cached_at = None
+
+        message_suffix = " (reverse order)" if reversed_match else ""
+        message = "Using cached route distance" + message_suffix + "."
+        return DistanceLookupResult(
+            distance_km=float(record["distance_km"]),
+            from_cache=True,
+            attempts=0,
+            cached_at=cached_at,
+            message=message,
+        )
 
 
 class DatabaseManager:
@@ -358,6 +470,14 @@ class DatabaseManager:
             FOREIGN KEY(ride_id) REFERENCES rides(id) ON DELETE CASCADE,
             FOREIGN KEY(driver_id) REFERENCES team_members(id) ON DELETE CASCADE,
             FOREIGN KEY(passenger_id) REFERENCES team_members(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS route_cache (
+            origin TEXT NOT NULL,
+            destination TEXT NOT NULL,
+            distance_km REAL NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (origin, destination)
         );
         """
         with self._connect() as conn:
@@ -430,7 +550,7 @@ class DatabaseManager:
 
         passenger_ids = [int(pid) for pid in passenger_ids]
         paying_passenger_ids = [int(pid) for pid in paying_passenger_ids]
-        timestamp = datetime.utcnow().isoformat(timespec="seconds")
+        timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
         primary_driver_id = driver_ids[0]
         with self._connect() as conn:
             cursor = conn.execute(
@@ -576,6 +696,41 @@ class DatabaseManager:
         return {
             "start": _dedupe(start_rows),
             "destination": _dedupe(dest_rows),
+        }
+
+    def upsert_route_cache(self, origin: str, destination: str, distance_km: float) -> None:
+        origin_key = origin.strip()
+        destination_key = destination.strip()
+        if not origin_key or not destination_key:
+            return
+        timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO route_cache (origin, destination, distance_km, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(origin, destination)
+                DO UPDATE SET distance_km=excluded.distance_km, updated_at=excluded.updated_at
+                """,
+                (origin_key, destination_key, float(distance_km), timestamp),
+            )
+            conn.commit()
+
+    def fetch_route_cache(self, origin: str, destination: str) -> Optional[dict[str, Any]]:
+        origin_key = origin.strip()
+        destination_key = destination.strip()
+        if not origin_key or not destination_key:
+            return None
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT distance_km, updated_at FROM route_cache WHERE origin = ? AND destination = ?",
+                (origin_key, destination_key),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "distance_km": float(row["distance_km"] or 0.0),
+            "updated_at": str(row["updated_at"]),
         }
 
     def fetch_ledger_summary(self) -> List[dict[str, Any]]:
@@ -2156,8 +2311,8 @@ class RideSetupTab(QWidget):
             form_state["destination_address"],
         )
         worker.signals.finished.connect(
-            lambda distance, state=form_state: self._on_distance_ready(
-                distance,
+            lambda result, state=form_state: self._on_distance_ready(
+                result,
                 state["flat_fee"],
                 state["per_km_fee"],
                 state["passenger_ids"],
@@ -2170,7 +2325,7 @@ class RideSetupTab(QWidget):
 
     def _on_distance_ready(
         self,
-        distance_km: float,
+        result: DistanceLookupResult,
         flat_fee: float,
         per_km_fee: float,
         passenger_ids: list[int],
@@ -2178,6 +2333,7 @@ class RideSetupTab(QWidget):
         driver_ids: list[int],
     ) -> None:
         self.calculate_button.setEnabled(True)
+        distance_km = result.distance_km
         round_trip_distance = round(distance_km * 2, 2)
         driver_count = max(len(driver_ids), 1)
         driver_flat_fee_total = round(flat_fee * driver_count, 2)
@@ -2200,9 +2356,16 @@ class RideSetupTab(QWidget):
         self.cost_per_passenger_value.setText(
             f"€{cost_per_passenger:.2f} per core member ({core_count} total, {driver_count} {driver_label})"
         )
-        self.distance_detail_label.setText(
+        distance_detail = (
             f"{distance_km:.2f} km each way · {round_trip_distance:.2f} km round trip."
         )
+        if result.from_cache:
+            if result.cached_at is not None:
+                cache_stamp = result.cached_at.strftime("%Y-%m-%d %H:%M UTC")
+                distance_detail += f" Cached from {cache_stamp}."
+            else:
+                distance_detail += " Cached distance used."
+        self.distance_detail_label.setText(distance_detail)
         self.total_cost_detail_label.setText(
             f"Flat: €{flat_fee:.2f} × {driver_count} + distance: €{distance_cost:.2f}."
         )
@@ -2211,18 +2374,28 @@ class RideSetupTab(QWidget):
         )
         self.save_button.setEnabled(True)
         self.summary_section.set_expanded(True)
-        self.validation_banner.show_message(
-            "Calculation updated. Review the totals, then save when you're ready.",
-            severity="success",
+        banner_messages: list[str] = []
+        if result.from_cache:
+            cache_message = result.message or "Using cached route distance."
+            banner_messages.append(cache_message)
+        success_line = "Calculation updated. Review the totals, then save when you're ready."
+        banner_messages.append(success_line)
+        if len(banner_messages) == 1:
+            self.validation_banner.show_message(banner_messages[0], severity="success")
+        else:
+            severity = "warning" if result.from_cache else "success"
+            self.validation_banner.show_messages(banner_messages, severity=severity)
+
+        activity_message = (
+            f"Round trip {round_trip_distance:.2f} km · total cost €{total_cost:.2f} "
+            f"for {len(core_passenger_ids)} core passenger(s)."
         )
-        self._emit_activity(
-            "success",
-            "Route calculation",
-            (
-                f"Round trip {round_trip_distance:.2f} km · total cost €{total_cost:.2f} "
-                f"for {len(core_passenger_ids)} core passenger(s)."
-            ),
-        )
+        if result.from_cache:
+            cache_activity = result.message or "Using cached route distance."
+            self._emit_activity("warning", "Route calculation fallback", cache_activity)
+            self._emit_activity("info", "Route calculation", activity_message)
+        else:
+            self._emit_activity("success", "Route calculation", activity_message)
 
     def _on_calculate_error(self, message: str) -> None:
         self.calculate_button.setEnabled(True)
@@ -3272,7 +3445,7 @@ def bootstrap_app() -> int:
         return 0
 
     os.environ["GOOGLE_MAPS_API_KEY"] = api_key
-    maps_handler = GoogleMapsHandler(api_key)
+    maps_handler = GoogleMapsHandler(api_key, db_manager)
 
     window = RideShareApp(db_manager, maps_handler, settings_manager)
     window.show()
