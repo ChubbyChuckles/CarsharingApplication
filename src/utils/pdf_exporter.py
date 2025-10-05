@@ -208,6 +208,13 @@ def export_ledger_pdf(
             raise ValueError("Column width fractions must not sum to zero.")
         return [doc.width * (fraction / total) for fraction in fractions]
 
+    creditor_totals: dict[str, float] = defaultdict(float)
+    debtor_totals: dict[str, float] = defaultdict(float)
+    for entry in ledger_entries:
+        amount = float(entry.get("amount", 0.0) or 0.0)
+        creditor_totals[str(entry.get("owed_name", "—"))] += amount
+        debtor_totals[str(entry.get("owes_name", "—"))] += amount
+
     total_outstanding = fsum(float(entry.get("amount", 0.0) or 0.0) for entry in ledger_entries)
     unique_debtors = {str(entry.get("owes_name", "—")) for entry in ledger_entries}
     unique_creditors = {str(entry.get("owed_name", "—")) for entry in ledger_entries}
@@ -299,6 +306,60 @@ def export_ledger_pdf(
         )
     )
 
+    creditor_table_data = [["Creditor", "Total Owed"]]
+    for name, total in sorted(creditor_totals.items(), key=lambda item: -item[1]):
+        creditor_table_data.append([name, _format_currency(total)])
+    creditor_table = Table(creditor_table_data, colWidths=_scaled_widths(0.55, 0.45))
+    creditor_table.setStyle(
+        TableStyle(
+            [
+                ("FONTNAME", (0, 0), (-1, -1), base_font),
+                ("FONTSIZE", (0, 0), (-1, 0), 10),
+                ("FONTSIZE", (0, 1), (-1, -1), 9),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0f1623")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("ALIGN", (-1, 1), (-1, -1), "RIGHT"),
+                (
+                    "ROWBACKGROUNDS",
+                    (0, 1),
+                    (-1, -1),
+                    [colors.HexColor("#f5f8ff"), colors.HexColor("#eaf1ff")],
+                ),
+                ("BOX", (0, 0), (-1, -1), 0.4, colors.HexColor("#cad8f4")),
+                ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#d7e1f5")),
+                ("TOPPADDING", (0, 0), (-1, -1), 6),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ]
+        )
+    )
+
+    debtor_table_data = [["Debtor", "Total Owed"]]
+    for name, total in sorted(debtor_totals.items(), key=lambda item: -item[1]):
+        debtor_table_data.append([name, _format_currency(total)])
+    debtor_table = Table(debtor_table_data, colWidths=_scaled_widths(0.55, 0.45))
+    debtor_table.setStyle(
+        TableStyle(
+            [
+                ("FONTNAME", (0, 0), (-1, -1), base_font),
+                ("FONTSIZE", (0, 0), (-1, 0), 10),
+                ("FONTSIZE", (0, 1), (-1, -1), 9),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0f1623")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("ALIGN", (-1, 1), (-1, -1), "RIGHT"),
+                (
+                    "ROWBACKGROUNDS",
+                    (0, 1),
+                    (-1, -1),
+                    [colors.HexColor("#f5f8ff"), colors.HexColor("#eaf1ff")],
+                ),
+                ("BOX", (0, 0), (-1, -1), 0.4, colors.HexColor("#cad8f4")),
+                ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#d7e1f5")),
+                ("TOPPADDING", (0, 0), (-1, -1), 6),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ]
+        )
+    )
+
     story: list = [
         Paragraph(title, title_style),
         Paragraph(subtitle, subtitle_style),
@@ -313,6 +374,13 @@ def export_ledger_pdf(
             "Amounts listed represent net obligations after reconciling every recorded ride. Positive balances indicate what the debtor must reimburse the creditor to settle all trips to date.",
             secondary_style,
         ),
+        Spacer(1, 6),
+        Paragraph("Cumulative Balances", section_header_style),
+        Paragraph("What each creditor is still owed.", secondary_style),
+        creditor_table,
+        Spacer(1, 10),
+        Paragraph("What each debtor still owes.", secondary_style),
+        debtor_table,
     ]
 
     if detailed_entries:
@@ -358,8 +426,8 @@ def export_ledger_pdf(
                 [
                     "Ride Date",
                     "Route & Distance",
-                    "Total Ride Cost",
-                    "Passenger Share",
+                    "Ride Cost",
+                    "Share",
                     "Tariff",
                     "Vehicle & Riders",
                 ]
@@ -402,9 +470,19 @@ def export_ledger_pdf(
                     f"<b>Drivers</b><br/>{vehicle_info}<br/><br/><b>Passengers</b><br/>{passengers_info}",
                     small_caps_style,
                 )
+                if ride_dt:
+                    date_text = ride_dt.strftime("%d %b %Y")
+                    time_text = ride_dt.strftime("%H:%M")
+                    ride_dt_display = Paragraph(
+                        f"{date_text}<br/><font size=8 color='#4e5d78'>{time_text}</font>",
+                        body_style,
+                    )
+                else:
+                    ride_dt_display = Paragraph(str(ride_dt_text), body_style)
+
                 detail_data.append(
                     [
-                        ride_dt_text,
+                        ride_dt_display,
                         route_paragraph,
                         _format_currency(float(detail.get("total_cost", 0.0) or 0.0)),
                         _format_currency(float(detail.get("amount", 0.0) or 0.0)),
@@ -472,9 +550,12 @@ def export_ledger_pdf(
         for ride in sorted(rides, key=lambda r: r.get("ride_datetime") or "", reverse=True):
             try:
                 ride_dt = datetime.fromisoformat(str(ride.get("ride_datetime")))
-                ride_dt_text = ride_dt.strftime("%d %b %Y %H:%M")
+                ride_dt_display = Paragraph(
+                    f"{ride_dt.strftime('%d %b %Y')}<br/><font size=8 color='#4e5d78'>{ride_dt.strftime('%H:%M')}</font>",
+                    body_style,
+                )
             except ValueError:
-                ride_dt_text = str(ride.get("ride_datetime", "—"))
+                ride_dt_display = Paragraph(str(ride.get("ride_datetime", "—")), body_style)
             route = Paragraph(
                 f"{ride.get('start_address', '—')} → {ride.get('destination_address', '—')}",
                 body_style,
@@ -485,7 +566,7 @@ def export_ledger_pdf(
             )
             ride_table_data.append(
                 [
-                    ride_dt_text,
+                    ride_dt_display,
                     route,
                     drivers_para,
                     passengers_para,
