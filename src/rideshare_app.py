@@ -490,7 +490,7 @@ class DatabaseManager:
                        r.cost_per_passenger,
                        r.ride_datetime
                 FROM rides r
-                ORDER BY datetime(r.ride_datetime) DESC
+                ORDER BY datetime(r.ride_datetime) DESC, r.id DESC
             """
             params: tuple[Any, ...] = ()
             if limit is not None:
@@ -2395,17 +2395,25 @@ class RideHistoryTab(QWidget):
         outstanding_value, outstanding_detail = self._summary_labels["outstanding"]
         total_outstanding = sum(entry["amount"] for entry in ledger_entries)
         outstanding_value.setText(f"€{total_outstanding:.2f}")
-        outstanding_detail.setText(
-            "All settled!"
-            if not ledger_entries
-            else "Sum of outstanding balances across the roster."
-        )
+        if ledger_entries:
+            balance_count = len(ledger_entries)
+            member_names: set[str] = set()
+            for entry in ledger_entries:
+                member_names.add(entry["owes_name"])
+                member_names.add(entry["owed_name"])
+            balance_label = "balance" if balance_count == 1 else "balances"
+            member_label = "teammate" if len(member_names) == 1 else "teammates"
+            outstanding_detail.setText(
+                f"{balance_count} open {balance_label} involving {len(member_names)} {member_label}."
+            )
+        else:
+            outstanding_detail.setText("All settled!")
 
         largest_value, largest_detail = self._summary_labels["largest"]
         if ledger_entries:
             biggest = max(ledger_entries, key=lambda entry: entry["amount"])
             largest_value.setText(f"€{biggest['amount']:.2f}")
-            largest_detail.setText(f"{biggest['owes_name']} → {biggest['owed_name']}")
+            largest_detail.setText(f"{biggest['owes_name']} owes {biggest['owed_name']}.")
         else:
             largest_value.setText("€0.00")
             largest_detail.setText("No balances yet.")
@@ -2413,14 +2421,15 @@ class RideHistoryTab(QWidget):
         latest_value, latest_detail = self._summary_labels["latest"]
         if rides:
             latest = rides[0]
-            latest_value.setText(self._format_datetime(latest["ride_datetime"]))
+            latest_value.setText(f"€{latest['total_cost']:.2f}")
             drivers = ", ".join(latest["drivers"]) if latest["drivers"] else "No drivers recorded"
             passengers = (
                 ", ".join(latest["passengers"])
                 if latest["passengers"]
                 else "No passengers recorded"
             )
-            latest_detail.setText(f"Drivers: {drivers}\nPassengers: {passengers}")
+            timestamp = self._format_datetime(latest["ride_datetime"])
+            latest_detail.setText(f"{timestamp}\nDrivers: {drivers}\nPassengers: {passengers}")
         else:
             latest_value.setText("—")
             latest_detail.setText("No rides saved yet.")
