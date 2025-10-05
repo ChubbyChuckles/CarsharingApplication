@@ -1,7 +1,7 @@
 import pytest
 from pathlib import Path
 from PyQt6.QtGui import QPalette
-from PyQt6.QtWidgets import QApplication, QDialog, QFrame
+from PyQt6.QtWidgets import QApplication, QDialog, QFrame, QWizard
 
 from src.rideshare_app import DatabaseManager, SettingsManager
 from src.utils import onboarding
@@ -47,6 +47,27 @@ def test_onboarding_wizard_collects_data(
     assert data.default_flat_fee == pytest.approx(6.75)
     assert data.default_fee_per_km == pytest.approx(0.65)
     assert data.team_members == ["Alice", "Bob"]
+
+
+def test_onboarding_buttons_have_variants(qapp):  # noqa: ARG001
+    wizard = onboarding.OnboardingWizard(
+        existing_api_key="",
+        default_flat_fee=5.0,
+        default_fee_per_km=0.5,
+        existing_members=[],
+    )
+
+    inner = wizard._wizard  # type: ignore[attr-defined]
+    next_button = inner.button(QWizard.WizardButton.NextButton)
+    back_button = inner.button(QWizard.WizardButton.BackButton)
+    cancel_button = inner.button(QWizard.WizardButton.CancelButton)
+
+    assert next_button is not None
+    assert cancel_button is not None
+    assert next_button.property("variant") == "primary"
+    if back_button is not None:
+        assert back_button.property("variant") == "secondary"
+    assert cancel_button.property("variant") == "ghost"
 
 
 def test_maybe_run_onboarding_updates_state(tmp_path: Path, qapp):  # noqa: ARG001

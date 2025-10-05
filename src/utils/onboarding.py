@@ -210,8 +210,8 @@ class _OnboardingWizardPages(QWizard):
             team_members=list(existing_members),
         )
         self._apply_theme()
-        QTimer.singleShot(0, self._neutralize_system_frames)
-        self.currentIdChanged.connect(lambda _id: self._neutralize_system_frames())
+        QTimer.singleShot(0, self._refresh_theming_state)
+        self.currentIdChanged.connect(lambda _id: self._refresh_theming_state())
 
     def accept(self) -> None:  # type: ignore[override]
         self._result_data = OnboardingData(
@@ -256,7 +256,6 @@ class _OnboardingWizardPages(QWizard):
         self._apply_page_palettes()
 
         accent_start = "#1ba2a4"
-        accent_end = "#3f6bcc"
         border_color = "#2b3b52"
         focus_color = "#35c4c7"
 
@@ -345,31 +344,89 @@ class _OnboardingWizardPages(QWizard):
             QWizard QSpinBox:focus {{
                 border: 1px solid {focus_color};
             }}
-            QWizard QDialogButtonBox QPushButton {{
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                                            stop:0 {accent_start}, stop:1 {accent_end});
-                color: #ffffff;
-                border: none;
-                border-radius: 10px;
-                padding: 8px 18px;
-                font-weight: 600;
-                letter-spacing: 0.5px;
-            }}
             QWizard QDialogButtonBox {{
                 background-color: {background.name()};
                 border-top: 1px solid #24334a;
                 padding: 12px 16px;
             }}
+            QWizard QDialogButtonBox QPushButton {{
+                background-color: #1c2940;
+                color: #e8f2ff;
+                border: 1px solid #2f3f57;
+                border-radius: 12px;
+                padding: 9px 22px;
+                min-height: 38px;
+                font-weight: 600;
+                letter-spacing: 0.4px;
+            }}
             QWizard QDialogButtonBox QPushButton:hover {{
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                                            stop:0 #28b3b5, stop:1 #4a7de8);
+                background-color: #23324a;
+                border-color: #3b5680;
+            }}
+            QWizard QDialogButtonBox QPushButton:pressed {{
+                background-color: #182335;
+                border-color: #2b4260;
+            }}
+            QWizard QDialogButtonBox QPushButton:focus {{
+                outline: none;
+                border-color: #63d6ff;
+            }}
+            QWizard QDialogButtonBox QPushButton[variant="primary"] {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                                            stop:0 #3cd2ff, stop:0.5 #4a8aff, stop:1 #6f5cff);
+                color: #041226;
+                border: 1px solid #73d7ff;
+                border-radius: 14px;
+            }}
+            QWizard QDialogButtonBox QPushButton[variant="primary"]:hover {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                                            stop:0 #55dbff, stop:0.5 #5b96ff, stop:1 #8971ff);
+                border-color: #90e8ff;
+            }}
+            QWizard QDialogButtonBox QPushButton[variant="primary"]:pressed {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                                            stop:0 #2fb9f0, stop:0.5 #3d74eb, stop:1 #5b4fe0);
+                border-color: #55bfff;
+                color: #03101f;
+            }}
+            QWizard QDialogButtonBox QPushButton[variant="secondary"] {{
+                background-color: rgba(59, 81, 118, 0.45);
+                border: 1px solid #3c5d87;
+                color: #d4e5ff;
+            }}
+            QWizard QDialogButtonBox QPushButton[variant="secondary"]:hover {{
+                background-color: rgba(72, 103, 148, 0.6);
+                border-color: #4c74a5;
+            }}
+            QWizard QDialogButtonBox QPushButton[variant="secondary"]:pressed {{
+                background-color: rgba(46, 66, 101, 0.75);
+                border-color: #33547d;
+            }}
+            QWizard QDialogButtonBox QPushButton[variant="ghost"] {{
+                background-color: transparent;
+                border: 1px solid transparent;
+                color: #95a9c6;
+            }}
+            QWizard QDialogButtonBox QPushButton[variant="ghost"]:hover {{
+                background-color: rgba(56, 76, 108, 0.45);
+                border-color: rgba(104, 147, 196, 0.65);
+                color: #dbe7ff;
+            }}
+            QWizard QDialogButtonBox QPushButton[variant="ghost"]:pressed {{
+                background-color: rgba(38, 54, 79, 0.65);
+                border-color: rgba(88, 122, 170, 0.7);
+                color: #bfd0ec;
             }}
             QWizard QDialogButtonBox QPushButton:disabled {{
-                background: #2a3a52;
-                color: #8ea0bc;
+                background-color: #2a3b52;
+                color: #879bb8;
+                border-color: #2f3f57;
             }}
             QWizard QFrame#OnboardingCard {{
                 background-color: #10243a;
+                background: qradialgradient(cx:0.2, cy:0.2, radius:0.9,
+                                            stop:0 rgba(60, 210, 255, 0.16),
+                                            stop:1 rgba(16, 36, 58, 0.94));
                 border: 1px solid #22324a;
                 border-radius: 16px;
                 padding: 20px 22px;
@@ -394,7 +451,42 @@ class _OnboardingWizardPages(QWizard):
             """
         )
 
+        self._refresh_theming_state()
+
+    def _refresh_theming_state(self) -> None:
         self._neutralize_system_frames()
+        self._apply_button_variants()
+
+    def _apply_button_variants(self) -> None:
+        variant_map = {
+            QWizard.WizardButton.NextButton: "primary",
+            QWizard.WizardButton.FinishButton: "primary",
+            QWizard.WizardButton.CommitButton: "primary",
+            QWizard.WizardButton.BackButton: "secondary",
+            QWizard.WizardButton.CustomButton1: "secondary",
+            QWizard.WizardButton.CustomButton2: "secondary",
+            QWizard.WizardButton.CustomButton3: "secondary",
+            QWizard.WizardButton.CancelButton: "ghost",
+            QWizard.WizardButton.HelpButton: "ghost",
+        }
+
+        seen_ids: set[int] = set()
+        for role, variant in variant_map.items():
+            button = self.button(role)
+            if button is None:
+                continue
+            button_id = id(button)
+            if button_id in seen_ids:
+                continue
+            seen_ids.add(button_id)
+
+            button.setProperty("variant", variant)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            style = button.style()
+            if style is not None:
+                style.unpolish(button)
+                style.polish(button)
+            button.update()
 
     def _apply_page_palettes(self) -> None:
         page_background = getattr(self, "_page_background", QColor("#152133"))
@@ -597,6 +689,7 @@ class OnboardingWizard(QDialog):
         self._wizard.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         chrome_layout.addWidget(self._wizard, 1)
         self._wizard._apply_page_palettes()
+        self._wizard._refresh_theming_state()
 
         self.setPalette(self._wizard.palette())
         self.setAutoFillBackground(True)
