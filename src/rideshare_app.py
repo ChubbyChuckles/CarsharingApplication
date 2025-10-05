@@ -607,6 +607,55 @@ class DatabaseManager:
         results.sort(key=lambda item: (-item["amount"], item["owes_name"], item["owed_name"]))
         return results
 
+    def fetch_ledger_details(self) -> List[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    le.passenger_id,
+                    passenger.name AS passenger_name,
+                    le.driver_id,
+                    driver.name AS driver_name,
+                    le.amount,
+                    r.id AS ride_id,
+                    r.ride_datetime,
+                    r.start_address,
+                    r.destination_address,
+                    r.distance_km,
+                    r.total_cost,
+                    r.flat_fee,
+                    r.fee_per_km,
+                    r.cost_per_passenger
+                FROM ledger_entries le
+                JOIN team_members passenger ON passenger.id = le.passenger_id
+                JOIN team_members driver ON driver.id = le.driver_id
+                JOIN rides r ON r.id = le.ride_id
+                ORDER BY datetime(r.ride_datetime) ASC, passenger.name COLLATE NOCASE, driver.name COLLATE NOCASE
+                """
+            ).fetchall()
+
+        details: List[dict[str, Any]] = []
+        for row in rows:
+            details.append(
+                {
+                    "passenger_id": int(row["passenger_id"]),
+                    "passenger_name": str(row["passenger_name"]),
+                    "driver_id": int(row["driver_id"]),
+                    "driver_name": str(row["driver_name"]),
+                    "amount": float(row["amount"] or 0.0),
+                    "ride_id": int(row["ride_id"]),
+                    "ride_datetime": str(row["ride_datetime"]),
+                    "start_address": str(row["start_address"]),
+                    "destination_address": str(row["destination_address"]),
+                    "distance_km": float(row["distance_km"] or 0.0),
+                    "total_cost": float(row["total_cost"] or 0.0),
+                    "flat_fee": float(row["flat_fee"] or 0.0),
+                    "fee_per_km": float(row["fee_per_km"] or 0.0),
+                    "cost_per_passenger": float(row["cost_per_passenger"] or 0.0),
+                }
+            )
+        return details
+
 
 @dataclass
 class TeamMember:
@@ -1557,8 +1606,16 @@ class RideHistoryTab(QWidget):
         if not file_name:
             return
 
+        ledger_details = self.db_manager.fetch_ledger_details()
+        all_rides = self.db_manager.fetch_rides_with_passengers(limit=None)
+
         try:
-            result_path = export_ledger_pdf(file_name, self._ledger_entries)
+            result_path = export_ledger_pdf(
+                file_name,
+                self._ledger_entries,
+                detailed_entries=ledger_details,
+                rides=all_rides,
+            )
         except Exception as exc:  # pylint: disable=broad-except
             QMessageBox.critical(
                 self,

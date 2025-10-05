@@ -1,6 +1,9 @@
 name: Build and Publish MSI
 
 on:
+  push:
+    branches:
+      - "**"
   release:
     types: [published]
   workflow_dispatch:
