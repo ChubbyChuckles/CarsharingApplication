@@ -45,7 +45,7 @@ from PyQt6.QtCore import (
     QPoint,
     QRegularExpression,
 )
-from PyQt6.QtGui import QColor, QFont, QRegularExpressionValidator, QValidator
+from PyQt6.QtGui import QColor, QFont, QRegularExpressionValidator, QValidator, QResizeEvent
 from PyQt6.QtWidgets import (
     QApplication,
     QAbstractItemView,
@@ -1296,11 +1296,13 @@ class RideSetupTab(QWidget):
         self._current_driver_ids: list[int] = []
 
         self.validation_banner = InlineFeedbackBanner(self)
+        self._layout_mode = "wide"
 
         self._build_layout()
         self._wire_signals()
         self._setup_live_validation()
         self._configure_focus_disclosure()
+        self._apply_responsive_layout(self.width() or 1200)
 
     def _build_layout(self) -> None:
         layout = QVBoxLayout(self)
@@ -1320,11 +1322,11 @@ class RideSetupTab(QWidget):
         layout.addWidget(subtitle)
         layout.addWidget(self.validation_banner)
 
-        content_layout = QGridLayout()
-        content_layout.setContentsMargins(0, 0, 0, 0)
-        content_layout.setHorizontalSpacing(20)
-        content_layout.setVerticalSpacing(20)
-        layout.addLayout(content_layout)
+        self._content_layout = QGridLayout()
+        self._content_layout.setContentsMargins(0, 0, 0, 0)
+        self._content_layout.setHorizontalSpacing(20)
+        self._content_layout.setVerticalSpacing(20)
+        layout.addLayout(self._content_layout)
 
         self.address_section = CollapsibleSection(
             "Step 1 · Route details",
@@ -1376,7 +1378,7 @@ class RideSetupTab(QWidget):
         address_grid.setColumnStretch(0, 1)
         address_grid.setColumnStretch(1, 1)
         self.address_section.add_content_widget(address_widget)
-        content_layout.addWidget(self.address_section, 0, 0)
+        self._content_layout.addWidget(self.address_section, 0, 0)
 
         self.team_section = CollapsibleSection(
             "Step 2 · Team",
@@ -1419,7 +1421,7 @@ class RideSetupTab(QWidget):
         team_layout.addWidget(team_hint)
 
         self.team_section.add_content_widget(team_widget)
-        content_layout.addWidget(self.team_section, 0, 1, 2, 1)
+        self._content_layout.addWidget(self.team_section, 0, 1, 2, 1)
 
         self.fees_section = CollapsibleSection(
             "Step 3 · Fees",
@@ -1450,7 +1452,7 @@ class RideSetupTab(QWidget):
         fees_layout.setColumnStretch(0, 1)
         fees_layout.setColumnStretch(1, 1)
         self.fees_section.add_content_widget(fees_widget)
-        content_layout.addWidget(self.fees_section, 1, 0)
+        self._content_layout.addWidget(self.fees_section, 1, 0)
 
         self.summary_section = CollapsibleSection(
             "Step 4 · Review & save",
@@ -1498,13 +1500,13 @@ class RideSetupTab(QWidget):
         summary_layout.addLayout(actions_row)
 
         self.summary_section.add_content_widget(summary_widget)
-        content_layout.addWidget(self.summary_section, 2, 0, 1, 2)
+        self._content_layout.addWidget(self.summary_section, 2, 0, 1, 2)
 
-        content_layout.setColumnStretch(0, 5)
-        content_layout.setColumnStretch(1, 3)
-        content_layout.setRowStretch(0, 1)
-        content_layout.setRowStretch(1, 0)
-        content_layout.setRowStretch(2, 0)
+        self._content_layout.setColumnStretch(0, 5)
+        self._content_layout.setColumnStretch(1, 3)
+        self._content_layout.setRowStretch(0, 1)
+        self._content_layout.setRowStretch(1, 0)
+        self._content_layout.setRowStretch(2, 0)
 
         layout.addStretch(1)
 
@@ -1538,6 +1540,43 @@ class RideSetupTab(QWidget):
 
         card_layout.addStretch(1)
         return card, detail_label
+
+    def resizeEvent(self, event: QResizeEvent) -> None:  # type: ignore[override]
+        super().resizeEvent(event)
+        self._apply_responsive_layout(event.size().width())
+
+    def _apply_responsive_layout(self, width: int) -> None:
+        if width <= 0:
+            return
+        breakpoint = 980
+        new_mode = "stacked" if width < breakpoint else "wide"
+        if new_mode == self._layout_mode:
+            return
+        self._layout_mode = new_mode
+
+        if new_mode == "stacked":
+            self._content_layout.addWidget(self.address_section, 0, 0)
+            self._content_layout.addWidget(self.team_section, 1, 0)
+            self._content_layout.addWidget(self.fees_section, 2, 0)
+            self._content_layout.addWidget(self.summary_section, 3, 0)
+
+            self._content_layout.setColumnStretch(0, 1)
+            self._content_layout.setColumnStretch(1, 0)
+            self._content_layout.setRowStretch(0, 0)
+            self._content_layout.setRowStretch(1, 1)
+            self._content_layout.setRowStretch(2, 0)
+            self._content_layout.setRowStretch(3, 0)
+        else:
+            self._content_layout.addWidget(self.address_section, 0, 0)
+            self._content_layout.addWidget(self.team_section, 0, 1, 2, 1)
+            self._content_layout.addWidget(self.fees_section, 1, 0)
+            self._content_layout.addWidget(self.summary_section, 2, 0, 1, 2)
+
+            self._content_layout.setColumnStretch(0, 5)
+            self._content_layout.setColumnStretch(1, 3)
+            self._content_layout.setRowStretch(0, 1)
+            self._content_layout.setRowStretch(1, 0)
+            self._content_layout.setRowStretch(2, 0)
 
     def _wire_signals(self) -> None:
         self.calculate_button.clicked.connect(self._on_calculate_clicked)
@@ -2116,17 +2155,28 @@ class RideHistoryTab(QWidget):
         subtitle.setProperty("role", "subtitle")
         layout.addWidget(subtitle)
 
+        self._content_layout = QGridLayout()
+        self._content_layout.setContentsMargins(0, 0, 0, 0)
+        self._content_layout.setHorizontalSpacing(20)
+        self._content_layout.setVerticalSpacing(20)
+        layout.addLayout(self._content_layout)
+
+        self.snapshot_section = CollapsibleSection(
+            "Snapshot",
+            description="High-level metrics for balances and recent rides.",
+            expanded=True,
+        )
         cards_container = QWidget()
-        cards_layout = QHBoxLayout(cards_container)
-        cards_layout.setContentsMargins(0, 0, 0, 0)
-        cards_layout.setSpacing(12)
+        self._summary_cards_layout = QGridLayout(cards_container)
+        self._summary_cards_layout.setContentsMargins(0, 0, 0, 0)
+        self._summary_cards_layout.setHorizontalSpacing(12)
+        self._summary_cards_layout.setVerticalSpacing(12)
 
         outstanding_card, outstanding_value, outstanding_detail = self._create_summary_card(
             "Outstanding balance",
             "€0.00",
             "All settled!",
         )
-        cards_layout.addWidget(outstanding_card)
         self._summary_labels["outstanding"] = (outstanding_value, outstanding_detail)
 
         biggest_card, biggest_value, biggest_detail = self._create_summary_card(
@@ -2134,7 +2184,6 @@ class RideHistoryTab(QWidget):
             "€0.00",
             "No balances yet.",
         )
-        cards_layout.addWidget(biggest_card)
         self._summary_labels["largest"] = (biggest_value, biggest_detail)
 
         latest_card, latest_value, latest_detail = self._create_summary_card(
@@ -2142,11 +2191,14 @@ class RideHistoryTab(QWidget):
             "—",
             "No rides saved yet.",
         )
-        cards_layout.addWidget(latest_card)
         self._summary_labels["latest"] = (latest_value, latest_detail)
 
-        cards_layout.addStretch(1)
-        layout.addWidget(cards_container)
+        self._summary_cards = [outstanding_card, biggest_card, latest_card]
+        for index, card in enumerate(self._summary_cards):
+            self._summary_cards_layout.addWidget(card, 0, index)
+
+        self.snapshot_section.add_content_widget(cards_container)
+        self._content_layout.addWidget(self.snapshot_section, 0, 0)
 
         self.rides_section = CollapsibleSection(
             "Recent rides",
@@ -2175,7 +2227,7 @@ class RideHistoryTab(QWidget):
         rides_hint.setProperty("role", "hint")
         rides_content_layout.addWidget(rides_hint)
         self.rides_section.add_content_widget(rides_content)
-        layout.addWidget(self.rides_section)
+        self._content_layout.addWidget(self.rides_section, 0, 1, 2, 1)
 
         self.ledger_section = CollapsibleSection(
             "Ledger details",
@@ -2204,9 +2256,12 @@ class RideHistoryTab(QWidget):
         ledger_hint.setProperty("role", "hint")
         ledger_layout.addWidget(ledger_hint)
         self.ledger_section.add_content_widget(ledger_content)
-        layout.addWidget(self.ledger_section)
+        self._content_layout.addWidget(self.ledger_section, 1, 0)
 
         layout.addStretch(1)
+        self._layout_mode = "wide"
+        self._arrange_summary_cards(self._layout_mode)
+        self._apply_responsive_layout(self.width() or 1200)
 
         self.rides_table.itemSelectionChanged.connect(self._update_delete_button_state)
 
@@ -2239,6 +2294,62 @@ class RideHistoryTab(QWidget):
 
         card_layout.addStretch(1)
         return card, value_label, detail_label
+
+    def resizeEvent(self, event: QResizeEvent) -> None:  # type: ignore[override]
+        super().resizeEvent(event)
+        self._apply_responsive_layout(event.size().width())
+
+    def _arrange_summary_cards(self, mode: str) -> None:
+        for card in self._summary_cards:
+            self._summary_cards_layout.removeWidget(card)
+
+        if mode == "stacked":
+            for row, card in enumerate(self._summary_cards):
+                self._summary_cards_layout.addWidget(card, row, 0)
+                self._summary_cards_layout.setRowStretch(row, 0)
+            self._summary_cards_layout.setColumnStretch(0, 1)
+            for column in range(1, 3):
+                self._summary_cards_layout.setColumnStretch(column, 0)
+            for column in range(1, len(self._summary_cards)):
+                self._summary_cards_layout.setRowStretch(column, 0)
+        else:
+            for column, card in enumerate(self._summary_cards):
+                self._summary_cards_layout.addWidget(card, 0, column)
+            for column in range(len(self._summary_cards)):
+                self._summary_cards_layout.setColumnStretch(column, 1)
+            for row in range(len(self._summary_cards)):
+                self._summary_cards_layout.setRowStretch(row, 0)
+
+    def _apply_responsive_layout(self, width: int) -> None:
+        if width <= 0:
+            return
+
+        new_mode = "stacked" if width < 1120 else "wide"
+        if new_mode == self._layout_mode:
+            return
+
+        self._layout_mode = new_mode
+
+        self._arrange_summary_cards(new_mode)
+
+        if new_mode == "stacked":
+            self._content_layout.addWidget(self.snapshot_section, 0, 0)
+            self._content_layout.addWidget(self.rides_section, 1, 0)
+            self._content_layout.addWidget(self.ledger_section, 2, 0)
+            self._content_layout.setColumnStretch(0, 1)
+            self._content_layout.setColumnStretch(1, 0)
+            self._content_layout.setRowStretch(0, 0)
+            self._content_layout.setRowStretch(1, 1)
+            self._content_layout.setRowStretch(2, 0)
+        else:
+            self._content_layout.addWidget(self.snapshot_section, 0, 0)
+            self._content_layout.addWidget(self.ledger_section, 1, 0)
+            self._content_layout.addWidget(self.rides_section, 0, 1, 2, 1)
+            self._content_layout.setColumnStretch(0, 3)
+            self._content_layout.setColumnStretch(1, 5)
+            self._content_layout.setRowStretch(0, 0)
+            self._content_layout.setRowStretch(1, 1)
+            self._content_layout.setRowStretch(2, 0)
 
     def refresh(self) -> None:
         rides = self.db_manager.fetch_rides_with_passengers(limit=3)
