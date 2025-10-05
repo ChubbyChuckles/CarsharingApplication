@@ -202,6 +202,12 @@ def export_ledger_pdf(
         title=title,
     )
 
+    def _scaled_widths(*fractions: float) -> list[float]:
+        total = sum(fractions)
+        if total == 0:
+            raise ValueError("Column width fractions must not sum to zero.")
+        return [doc.width * (fraction / total) for fraction in fractions]
+
     total_outstanding = fsum(float(entry.get("amount", 0.0) or 0.0) for entry in ledger_entries)
     unique_debtors = {str(entry.get("owes_name", "—")) for entry in ledger_entries}
     unique_creditors = {str(entry.get("owed_name", "—")) for entry in ledger_entries}
@@ -239,7 +245,7 @@ def export_ledger_pdf(
         ["Unique Creditors", str(len(unique_creditors))],
         ["Rides Analysed", str(len(rides))],
     ]
-    info_table = Table(info_table_data, colWidths=[45 * mm, 120 * mm])
+    info_table = Table(info_table_data, colWidths=_scaled_widths(0.28, 0.72))
     info_table.setStyle(
         TableStyle(
             [
@@ -263,7 +269,7 @@ def export_ledger_pdf(
             ]
         )
 
-    summary_table = Table(summary_table_data, colWidths=[70 * mm, 70 * mm, 35 * mm])
+    summary_table = Table(summary_table_data, colWidths=_scaled_widths(0.4, 0.35, 0.25))
     summary_table.setStyle(
         TableStyle(
             [
@@ -409,7 +415,7 @@ def export_ledger_pdf(
 
             detail_table = Table(
                 detail_data,
-                colWidths=[28 * mm, 58 * mm, 30 * mm, 30 * mm, 42 * mm, 47 * mm],
+                colWidths=_scaled_widths(0.13, 0.23, 0.14, 0.14, 0.18, 0.18),
                 repeatRows=1,
             )
             detail_table.setStyle(
@@ -491,7 +497,7 @@ def export_ledger_pdf(
 
         rides_table = Table(
             ride_table_data,
-            colWidths=[28 * mm, 52 * mm, 40 * mm, 40 * mm, 25 * mm, 30 * mm, 30 * mm],
+            colWidths=_scaled_widths(0.13, 0.2, 0.15, 0.15, 0.1, 0.13, 0.14),
             repeatRows=1,
         )
         rides_table.setStyle(

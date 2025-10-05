@@ -30,6 +30,18 @@ jobs:
         with:
           name: rideshare-msi
           path: dist/*.msi
+      - name: Publish continuous build
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: nightly-master
+          name: Nightly build (master)
+          body: |
+            Automated build from commit ${{ github.sha }} on branch master.
+          files: dist/*.msi
+          draft: false
+          prerelease: false
+          overwrite: true
       - name: Publish release asset
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
