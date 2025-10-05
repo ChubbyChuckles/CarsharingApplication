@@ -15,6 +15,7 @@ dependencies = [
     "sphinxcontrib-napoleon",
     "pre-commit",
     "PyQt6",
+    "pyqtgraph",
     "googlemaps",
     "python-dotenv",
     "reportlab",

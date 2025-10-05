@@ -32,7 +32,9 @@ from itertools import count
 from pathlib import Path
 from typing import Any, Callable, Iterable, List, Optional, Sequence
 
+import numpy as np
 import googlemaps
+import pyqtgraph as pg
 from dotenv import load_dotenv
 from googlemaps.exceptions import ApiError, TransportError
 from PyQt6.QtCore import (
@@ -46,6 +48,7 @@ from PyQt6.QtCore import (
     QEvent,
     QPoint,
     QRegularExpression,
+    QRectF,
 )
 from PyQt6.QtGui import (
     QColor,
@@ -80,6 +83,7 @@ from PyQt6.QtWidgets import (
     QSplitter,
     QSizeGrip,
     QSizePolicy,
+    QStackedLayout,
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -91,6 +95,8 @@ from PyQt6.QtWidgets import (
 
 from .utils.onboarding import OnboardingAborted, maybe_run_onboarding
 from .utils.pdf_exporter import export_ledger_pdf
+
+pg.setConfigOptions(antialias=True, background=None, foreground="#f4f6fa")
 
 
 APP_BUNDLE_ROOT = Path(__file__).resolve().parent
@@ -696,6 +702,123 @@ class DatabaseManager:
         return {
             "start": _dedupe(start_rows),
             "destination": _dedupe(dest_rows),
+        }
+
+    def fetch_member_cost_trends(
+        self,
+        months: int = 6,
+        reference: Optional[datetime] = None,
+    ) -> dict[str, Any]:
+        """Return total passenger spend per month for the requested window.
+
+        The result is a dictionary with ``periods`` (e.g. ``["2025-01", ...]``) and ``series``
+        (each entry contains ``member`` and ``values`` for each period).
+        """
+
+        if months <= 0:
+            months = 6
+        ref = reference or datetime.now(timezone.utc)
+        if ref.tzinfo is None:
+            ref = ref.replace(tzinfo=timezone.utc)
+        else:
+            ref = ref.astimezone(timezone.utc)
+
+        periods: list[str] = []
+        year = ref.year
+        month = ref.month
+        for _ in range(months):
+            periods.append(f"{year:04d}-{month:02d}")
+            month -= 1
+            if month <= 0:
+                month = 12
+                year -= 1
+        periods.reverse()
+        period_lookup = set(periods)
+
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    le.passenger_id AS passenger_id,
+                    tm.name AS passenger_name,
+                    le.amount AS amount,
+                    r.ride_datetime AS ride_datetime
+                FROM ledger_entries le
+                JOIN rides r ON le.ride_id = r.id
+                JOIN team_members tm ON le.passenger_id = tm.id
+                """
+            ).fetchall()
+
+        if not rows:
+            return {"periods": periods, "series": []}
+
+        aggregates: dict[str, dict[str, float]] = {}
+        for row in rows:
+            ride_timestamp = str(row["ride_datetime"]) if "ride_datetime" in row.keys() else ""
+            try:
+                ride_dt = datetime.fromisoformat(ride_timestamp)
+            except ValueError:
+                continue
+            if ride_dt.tzinfo is None:
+                ride_dt = ride_dt.replace(tzinfo=timezone.utc)
+            else:
+                ride_dt = ride_dt.astimezone(timezone.utc)
+            period = f"{ride_dt.year:04d}-{ride_dt.month:02d}"
+            if period not in period_lookup:
+                continue
+
+            name = str(row["passenger_name"]) if "passenger_name" in row.keys() else ""
+            if not name:
+                continue
+            amount = float(row["amount"] or 0.0)
+            member_data = aggregates.setdefault(name, {})
+            member_data[period] = round(member_data.get(period, 0.0) + amount, 2)
+
+        if not aggregates:
+            return {"periods": periods, "series": []}
+
+        series: list[dict[str, Any]] = []
+        for name in sorted(aggregates.keys()):
+            member_data = aggregates[name]
+            values = [round(member_data.get(period, 0.0), 2) for period in periods]
+            if any(value > 0 for value in values):
+                series.append({"member": name, "values": values})
+
+        return {"periods": periods, "series": series}
+
+    def fetch_ride_frequency(self) -> dict[str, Any]:
+        """Return ride counts grouped by weekday and hour (UTC)."""
+
+        weekday_labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        hour_labels = [f"{hour:02d}" for hour in range(24)]
+        matrix: list[list[int]] = [[0 for _ in range(24)] for _ in range(7)]
+
+        with self._connect() as conn:
+            rows = conn.execute("SELECT ride_datetime FROM rides").fetchall()
+
+        total_rides = 0
+        for row in rows:
+            ride_timestamp = str(row["ride_datetime"]) if "ride_datetime" in row.keys() else ""
+            try:
+                ride_dt = datetime.fromisoformat(ride_timestamp)
+            except ValueError:
+                continue
+            if ride_dt.tzinfo is None:
+                ride_dt = ride_dt.replace(tzinfo=timezone.utc)
+            else:
+                ride_dt = ride_dt.astimezone(timezone.utc)
+
+            weekday = ride_dt.weekday()
+            hour = ride_dt.hour
+            if 0 <= weekday < 7 and 0 <= hour < 24:
+                matrix[weekday][hour] += 1
+                total_rides += 1
+
+        return {
+            "matrix": matrix,
+            "weekday_labels": weekday_labels,
+            "hour_labels": hour_labels,
+            "total_rides": total_rides,
         }
 
     def upsert_route_cache(self, origin: str, destination: str, distance_km: float) -> None:
@@ -3011,6 +3134,311 @@ class RideHistoryTab(QWidget):
         return dt.strftime("%Y-%m-%d %H:%M")
 
 
+class AnalyticsTab(QWidget):
+    """Visualise ride costs and activity using lightweight dashboards."""
+
+    activity_event = pyqtSignal(str, str, str)
+
+    def __init__(self, db_manager: DatabaseManager, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.db_manager = db_manager
+        self._latest_periods: list[str] = []
+        self._latest_series: list[dict[str, Any]] = []
+        self._latest_frequency_total: int = 0
+
+        self._view_background = QColor("#101a2b")
+        self._axis_line_color = QColor("#2b3a52")
+        self._axis_text_color = QColor("#dee7ff")
+        self._grid_pen = pg.mkPen(QColor(35, 53, 74, 90), width=1)
+        self._line_palette: list[QColor] = [
+            QColor("#35c4c7"),
+            QColor("#ff7b7b"),
+            QColor("#ffd27d"),
+            QColor("#4f70ff"),
+            QColor("#9b59ff"),
+        ]
+        self._heatmap_cmap = pg.ColorMap(
+            np.linspace(0.0, 1.0, 5),
+            [
+                (15, 22, 35),
+                (26, 52, 78),
+                (43, 105, 131),
+                (53, 196, 199),
+                (255, 210, 125),
+            ],
+        )
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(18)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        title = QLabel("Analytics overview")
+        title.setProperty("role", "title")
+        layout.addWidget(title)
+
+        subtitle = QLabel(
+            "Spot spending patterns across recent months and identify the busiest travel windows."
+        )
+        subtitle.setWordWrap(True)
+        subtitle.setProperty("role", "subtitle")
+        layout.addWidget(subtitle)
+
+        self.trend_section = CollapsibleSection(
+            "Member cost trends",
+            description="Compare how much each passenger has contributed over the selected window.",
+            expanded=True,
+        )
+        trend_content = QWidget()
+        trend_layout = QVBoxLayout(trend_content)
+        trend_layout.setContentsMargins(0, 0, 0, 0)
+        trend_layout.setSpacing(12)
+
+        controls_row = QHBoxLayout()
+        controls_row.setSpacing(10)
+        controls_row.addStretch(1)
+        window_label = QLabel("Window")
+        window_label.setProperty("role", "sectionLabel")
+        controls_row.addWidget(window_label)
+        self.period_combo = QComboBox()
+        self.period_combo.addItem("Last 3 months", 3)
+        self.period_combo.addItem("Last 6 months", 6)
+        self.period_combo.addItem("Last 12 months", 12)
+        controls_row.addWidget(self.period_combo)
+        self.refresh_button = QPushButton("Refresh analytics")
+        self.refresh_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        controls_row.addWidget(self.refresh_button)
+        trend_layout.addLayout(controls_row)
+
+        self.cost_plot = pg.PlotWidget()
+        self.cost_plot.setLabel("left", "Passenger spend (€)")
+        self.cost_plot.setLabel("bottom", "Month")
+        self.cost_plot.setMenuEnabled(False)
+        self.cost_plot.setMinimumHeight(280)
+        self.cost_plot.invertY(False)
+        self.cost_legend = self.cost_plot.addLegend(offset=(10, 10))
+        self._configure_cost_plot()
+
+        self.cost_placeholder = QLabel(
+            "Add rides with paying passengers to build monthly spend trends."
+        )
+        self.cost_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.cost_placeholder.setProperty("role", "hint")
+
+        self.cost_stack = QStackedLayout()
+        self.cost_stack.addWidget(self.cost_plot)
+        placeholder_container = QWidget()
+        placeholder_layout = QVBoxLayout(placeholder_container)
+        placeholder_layout.setContentsMargins(0, 0, 0, 0)
+        placeholder_layout.addStretch(1)
+        placeholder_layout.addWidget(self.cost_placeholder, 0, Qt.AlignmentFlag.AlignCenter)
+        placeholder_layout.addStretch(1)
+        self.cost_stack.addWidget(placeholder_container)
+        trend_layout.addLayout(self.cost_stack)
+
+        trend_hint = QLabel(
+            "Totals reflect passenger contributions recorded in the ledger. Drivers are excluded."
+        )
+        trend_hint.setWordWrap(True)
+        trend_hint.setProperty("role", "hint")
+        trend_layout.addWidget(trend_hint)
+
+        self.trend_section.add_content_widget(trend_content)
+        layout.addWidget(self.trend_section)
+
+        self.heatmap_section = CollapsibleSection(
+            "Ride frequency heatmap",
+            description="Identify the weekdays and hours where rides occur most often.",
+            expanded=True,
+        )
+        heat_content = QWidget()
+        heat_layout = QVBoxLayout(heat_content)
+        heat_layout.setContentsMargins(0, 0, 0, 0)
+        heat_layout.setSpacing(12)
+
+        self.heatmap_plot = pg.PlotWidget()
+        self.heatmap_plot.setMenuEnabled(False)
+        self.heatmap_plot.setMouseEnabled(x=False, y=False)
+        self.heatmap_plot.hideButtons()
+        self.heatmap_plot.setLabel("bottom", "Hour (24h)")
+        self.heatmap_plot.setLabel("left", "Weekday")
+        self.heatmap_plot.showGrid(x=False, y=False)
+        self.heatmap_plot.invertY(True)
+        self.heatmap_plot.setMinimumHeight(320)
+        self.heatmap_item = pg.ImageItem()
+        self.heatmap_plot.addItem(self.heatmap_item)
+        self._configure_heatmap_plot()
+
+        self.heatmap_placeholder = QLabel(
+            "Once rides are logged, their distribution appears here as a heatmap."
+        )
+        self.heatmap_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.heatmap_placeholder.setProperty("role", "hint")
+
+        self.heatmap_stack = QStackedLayout()
+        self.heatmap_stack.addWidget(self.heatmap_plot)
+        heat_placeholder_container = QWidget()
+        heat_placeholder_layout = QVBoxLayout(heat_placeholder_container)
+        heat_placeholder_layout.setContentsMargins(0, 0, 0, 0)
+        heat_placeholder_layout.addStretch(1)
+        heat_placeholder_layout.addWidget(
+            self.heatmap_placeholder,
+            0,
+            Qt.AlignmentFlag.AlignCenter,
+        )
+        heat_placeholder_layout.addStretch(1)
+        self.heatmap_stack.addWidget(heat_placeholder_container)
+        heat_layout.addLayout(self.heatmap_stack)
+
+        heat_hint = QLabel("Hours use UTC based on saved ride timestamps.")
+        heat_hint.setWordWrap(True)
+        heat_hint.setProperty("role", "hint")
+        heat_layout.addWidget(heat_hint)
+
+        self.heatmap_section.add_content_widget(heat_content)
+        layout.addWidget(self.heatmap_section)
+
+        layout.addStretch(1)
+
+        self.period_combo.currentIndexChanged.connect(self.refresh)
+        self.refresh_button.clicked.connect(self.refresh)
+
+        self.cost_stack.setCurrentIndex(1)
+        self.heatmap_stack.setCurrentIndex(1)
+
+    def refresh(self) -> None:
+        months = int(self.period_combo.currentData(Qt.ItemDataRole.UserRole) or 6)
+
+        trend_data = self.db_manager.fetch_member_cost_trends(months=months)
+        periods = trend_data.get("periods", [])
+        series = trend_data.get("series", [])
+        self._latest_periods = periods
+        self._latest_series = series
+
+        self.cost_plot.clear()
+        if self.cost_legend is not None:
+            self.cost_legend.clear()
+
+        messages: list[str] = []
+
+        if series and periods:
+            self.cost_stack.setCurrentIndex(0)
+            x_values = list(range(len(periods)))
+            bottom_axis = self.cost_plot.getAxis("bottom")
+            bottom_axis.setTicks([[(index, label) for index, label in enumerate(periods)]])
+
+            max_value = 0.0
+            for index, entry in enumerate(series):
+                values = entry.get("values", [])
+                if len(values) != len(periods):
+                    continue
+                color = self._line_palette[index % len(self._line_palette)]
+                pen = pg.mkPen(color=color, width=2)
+                self.cost_plot.plot(
+                    x_values,
+                    values,
+                    pen=pen,
+                    name=entry.get("member", f"Member {index + 1}"),
+                    symbol="o",
+                    symbolSize=6,
+                    symbolBrush=color,
+                    symbolPen=pg.mkPen(color=color, width=1),
+                )
+                if values:
+                    max_value = max(max_value, max(values))
+            upper = max_value * 1.15 if max_value > 0 else 1.0
+            self.cost_plot.setYRange(0, upper, padding=0.02)
+            messages.append(
+                f"cost trends for {len(series)} passenger{'s' if len(series) != 1 else ''}"
+            )
+        else:
+            self.cost_stack.setCurrentIndex(1)
+            if not series:
+                self.cost_placeholder.setText(
+                    "Add rides with core passengers to build monthly spend trends."
+                )
+
+        frequency = self.db_manager.fetch_ride_frequency()
+        matrix = frequency.get("matrix", [])
+        total_rides = int(frequency.get("total_rides", 0))
+        self._latest_frequency_total = total_rides
+
+        if total_rides > 0 and matrix:
+            self.heatmap_stack.setCurrentIndex(0)
+            arr = np.array(matrix, dtype=float)
+            if arr.size == 0:
+                arr = np.zeros((7, 24), dtype=float)
+            max_count = float(arr.max()) if arr.size else 0.0
+            if max_count <= 0:
+                max_count = 1.0
+            self.heatmap_item.setImage(arr, levels=(0.0, max_count))
+            self.heatmap_item.setRect(QRectF(0, 0, arr.shape[1], arr.shape[0]))
+            self.heatmap_item.setLookupTable(self._heatmap_cmap.getLookupTable(alpha=False))
+            self.heatmap_item.setOpacity(0.92)
+
+            hour_labels = frequency.get("hour_labels", [])
+            weekday_labels = frequency.get("weekday_labels", [])
+            bottom_ticks = [
+                (hour + 0.5, label) for hour, label in enumerate(hour_labels) if hour % 2 == 0
+            ]
+            left_ticks = [(index + 0.5, label) for index, label in enumerate(weekday_labels)]
+            self.heatmap_plot.getAxis("bottom").setTicks([bottom_ticks])
+            self.heatmap_plot.getAxis("left").setTicks([left_ticks])
+            self.heatmap_plot.setLimits(
+                xMin=0,
+                xMax=arr.shape[1],
+                yMin=0,
+                yMax=arr.shape[0],
+            )
+            messages.append(
+                f"ride activity heatmap with {total_rides} entry{'ies' if total_rides != 1 else ''}"
+            )
+        else:
+            self.heatmap_stack.setCurrentIndex(1)
+            self.heatmap_placeholder.setText(
+                "Once rides are logged, their distribution appears here as a heatmap."
+            )
+
+        if messages:
+            summary = "; ".join(messages)
+            self.activity_event.emit("info", "Analytics refreshed", summary.capitalize() + ".")
+
+    def _configure_cost_plot(self) -> None:
+        plot_item = self.cost_plot.getPlotItem()
+        view_box = plot_item.getViewBox()
+        view_box.setBackgroundColor(self._view_background)
+        plot_item.showGrid(x=True, y=True, alpha=0.12)
+        try:
+            grid = plot_item.getGridItem()
+            grid.setPen(self._grid_pen)
+        except AttributeError:  # pragma: no cover - fallback if API absent
+            pass
+        plot_item.setMenuEnabled(False)
+        try:
+            self.cost_legend.setBrush(pg.mkBrush(QColor(15, 22, 35, 230)))
+            self.cost_legend.setPen(pg.mkPen(QColor("#23324a")))
+            self.cost_legend.setLabelTextColor(self._axis_text_color)
+        except AttributeError:  # pragma: no cover - legend API differs across versions
+            pass
+        self._style_axis(plot_item, "left")
+        self._style_axis(plot_item, "bottom")
+
+    def _configure_heatmap_plot(self) -> None:
+        plot_item = self.heatmap_plot.getPlotItem()
+        view_box = plot_item.getViewBox()
+        view_box.setBackgroundColor(self._view_background)
+        plot_item.setMenuEnabled(False)
+        plot_item.getAxis("right").setVisible(False)
+        plot_item.getAxis("top").setVisible(False)
+        self._style_axis(plot_item, "left")
+        self._style_axis(plot_item, "bottom")
+
+    def _style_axis(self, plot_item, axis: str) -> None:
+        ax = plot_item.getAxis(axis)
+        ax.setPen(pg.mkPen(self._axis_line_color, width=1))
+        ax.setTextPen(pg.mkPen(self._axis_text_color))
+        ax.setStyle(tickFont=QFont("Segoe UI", 9), tickTextOffset=6)
+
+
 class WindowTitleBar(QWidget):
     """Custom dark-themed window chrome with caption controls."""
 
@@ -3270,10 +3698,12 @@ class RideShareApp(QMainWindow):
         self.ride_tab = RideSetupTab(self.db_manager, self.maps_handler, self.thread_pool)
         self.ride_tab.apply_settings(self.settings_manager.data)
         self.history_tab = RideHistoryTab(self.db_manager)
+        self.analytics_tab = AnalyticsTab(self.db_manager)
 
         self.tabs.addTab(self.team_tab, "Team Management")
         self.tabs.addTab(self.ride_tab, "Ride Setup")
         self.tabs.addTab(self.history_tab, "Ride History & Ledger")
+        self.tabs.addTab(self.analytics_tab, "Analytics Dashboard")
 
         self.team_tab.members_changed.connect(self._on_members_changed)
         self.ride_tab.ride_saved.connect(self._on_ride_saved)
@@ -3281,6 +3711,7 @@ class RideShareApp(QMainWindow):
         self.team_tab.activity_event.connect(self._log_activity)
         self.ride_tab.activity_event.connect(self._log_activity)
         self.history_tab.activity_event.connect(self._log_activity)
+        self.analytics_tab.activity_event.connect(self._log_activity)
 
         self.notification_center.unread_changed.connect(self._on_notification_unread_changed)
         self.title_bar.notification_button.clicked.connect(self._toggle_notification_panel)
@@ -3302,6 +3733,7 @@ class RideShareApp(QMainWindow):
         ]
         self.ride_tab.set_team_members(members)
         self.history_tab.refresh()
+        self.analytics_tab.refresh()
         self._refresh_recent_addresses()
         self._log_activity(
             "info",
@@ -3316,6 +3748,7 @@ class RideShareApp(QMainWindow):
     def _on_members_changed(self, members: list[TeamMember]) -> None:
         self.ride_tab.set_team_members(members)
         self.history_tab.refresh()
+        self.analytics_tab.refresh()
         self._refresh_recent_addresses()
 
     def _refresh_recent_addresses(self) -> None:
@@ -3353,6 +3786,7 @@ class RideShareApp(QMainWindow):
 
     def _on_ride_saved(self) -> None:
         self.history_tab.refresh()
+        self.analytics_tab.refresh()
         self._refresh_recent_addresses()
         self._log_activity(
             "info",
@@ -3361,6 +3795,7 @@ class RideShareApp(QMainWindow):
         )
 
     def _on_ride_deleted(self) -> None:
+        self.analytics_tab.refresh()
         self._refresh_recent_addresses()
         self._log_activity(
             "info",

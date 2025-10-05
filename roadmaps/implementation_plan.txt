@@ -3,7 +3,7 @@
 [x] Add comprehensive inline form validation and friendly error messaging across all data-entry widgets (use `QValidator`, `QRegularExpressionValidator`, and toast-like `QMessageBox` replacements) so users know exactly how to fix mistakes without modal interruptions.
 [x] Create a consolidated notification and activity center panel that logs API errors, export outcomes, and background sync status, reducing the reliance on transient modal dialogs.
 [x] Extend error recovery by adding retry + offline fallback logic around Google Maps calls (caching the most recent successful routes via SQLite) to prevent user dead-ends when connectivity is unreliable.
-[ ] Introduce lightweight analytics dashboards (per-member cost trends, ride frequency heatmaps) using a plotting library such as PyQtGraph embedded in a dedicated tab to surface actionable insights.
+[x] Introduce lightweight analytics dashboards (per-member cost trends, ride frequency heatmaps) using a plotting library such as PyQtGraph embedded in a dedicated tab to surface actionable insights.
 [ ] Expand automated UX regression coverage with PyQt-focused UI tests (e.g., `pytest-qt`) to confirm critical flows—ride creation, ledger export, settings update—stay accessible and responsive.
 [ ] Document UX conventions and interaction patterns in `docs/` (tone of voice, component usage, accessibility guarantees) so future contributors can extend the interface consistently.
 [x] Deliver professional receipt-style PDF exports with cumulative balance sections using ReportLab (`src/utils/pdf_exporter.py`).
