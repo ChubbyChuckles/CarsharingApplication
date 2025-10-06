@@ -182,7 +182,7 @@ class SettingsManager:
         "default_flat_fee": 5.0,
         "default_fee_per_km": 0.5,
         "window_size": {"width": 1100, "height": 740},
-        "team_table_column_widths": [420, 140],
+        "team_table_column_widths": [420, 160, 120, 120],
         "google_maps_api_key": "",
         "onboarding": {"completed": False, "completed_at": None},
     }
@@ -534,7 +534,26 @@ class DatabaseManager:
     def fetch_team_members(self) -> List[dict[str, Any]]:
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT id, name, is_core FROM team_members ORDER BY name COLLATE NOCASE"
+                """
+                SELECT
+                    tm.id,
+                    tm.name,
+                    tm.is_core,
+                    COALESCE(driver_counts.driver_count, 0) AS driver_count,
+                    COALESCE(passenger_counts.passenger_count, 0) AS passenger_count
+                FROM team_members tm
+                LEFT JOIN (
+                    SELECT driver_id, COUNT(*) AS driver_count
+                    FROM ride_drivers
+                    GROUP BY driver_id
+                ) AS driver_counts ON driver_counts.driver_id = tm.id
+                LEFT JOIN (
+                    SELECT passenger_id, COUNT(*) AS passenger_count
+                    FROM ride_passengers
+                    GROUP BY passenger_id
+                ) AS passenger_counts ON passenger_counts.passenger_id = tm.id
+                ORDER BY tm.name COLLATE NOCASE
+                """
             ).fetchall()
         return [dict(row) for row in rows]
 
@@ -969,6 +988,8 @@ class TeamMember:
     member_id: int
     name: str
     is_core: bool
+    driver_count: int = 0
+    passenger_count: int = 0
 
 
 class AddressLineEdit(QLineEdit):
@@ -1099,8 +1120,8 @@ class CollapsibleSection(QWidget):
         self._content_frame.setVisible(expanded)
 
 
-class InlineFeedbackBanner(QFrame):
-    """Compact inline alert widget for contextual validation feedback."""
+class StatusMessageLabel(QLabel):
+    """Lightweight status indicator for inline validation and feedback."""
 
     _ICONS: dict[str, str] = {
         "info": "ℹ",
@@ -1109,37 +1130,23 @@ class InlineFeedbackBanner(QFrame):
         "error": "⛔",
     }
 
+    _PALETTE: dict[str, tuple[str, str, str]] = {
+        "info": ("#2c3e50", "#cde8ff", "#17354e"),
+        "success": ("#1f4434", "#d3f5e7", "#0e2a21"),
+        "warning": ("#5a4515", "#ffeccc", "#3b2c0f"),
+        "error": ("#5d1d26", "#ffd7dd", "#3c1219"),
+    }
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setObjectName("InlineFeedbackBanner")
-        self.setProperty("severity", "info")
+        self.setObjectName("StatusMessageLabel")
+        self.setWordWrap(True)
         self.setVisible(False)
+        self.setTextFormat(Qt.TextFormat.PlainText)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
         self._messages: list[str] = []
         self._severity = "info"
-
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(16, 12, 14, 12)
-        layout.setSpacing(12)
-
-        self._icon_label = QLabel(self._ICONS["info"], self)
-        self._icon_label.setObjectName("InlineFeedbackIcon")
-        layout.addWidget(self._icon_label, 0, Qt.AlignmentFlag.AlignTop)
-
-        self._message_label = QLabel("", self)
-        self._message_label.setObjectName("InlineFeedbackMessage")
-        self._message_label.setWordWrap(True)
-        self._message_label.setTextFormat(Qt.TextFormat.RichText)
-        layout.addWidget(self._message_label, 1)
-
-        self._close_button = QPushButton("×", self)
-        self._close_button.setObjectName("InlineFeedbackCloseButton")
-        self._close_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._close_button.setFlat(True)
-        self._close_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self._close_button.clicked.connect(self.clear)
-        layout.addWidget(self._close_button, 0, Qt.AlignmentFlag.AlignTop)
 
     def show_messages(self, messages: Sequence[str], *, severity: str = "info") -> None:
         cleaned = [line.strip() for line in messages if line and line.strip()]
@@ -1148,17 +1155,15 @@ class InlineFeedbackBanner(QFrame):
             return
         self._messages = cleaned
         self._severity = severity
-        self.setProperty("severity", severity)
-        icon = self._ICONS.get(severity, self._ICONS["info"])
-        self._icon_label.setText(icon)
+        self._apply_style()
 
+        icon = self._ICONS.get(severity, "")
         if len(cleaned) == 1:
             body = cleaned[0]
         else:
-            bullet_items = "".join(f"<li>{msg}</li>" for msg in cleaned)
-            body = f"<ul>{bullet_items}</ul>"
-        self._message_label.setText(body)
-        self._refresh_style()
+            body = "\n".join(f"• {msg}" for msg in cleaned)
+        text = f"{icon} {body}".strip()
+        self.setText(text)
         self.setVisible(True)
 
     def show_message(self, message: str, *, severity: str = "info") -> None:
@@ -1166,10 +1171,9 @@ class InlineFeedbackBanner(QFrame):
 
     def clear(self) -> None:
         self._messages = []
-        self._message_label.clear()
         self._severity = "info"
-        self.setProperty("severity", "info")
-        self._refresh_style()
+        self.setText("")
+        self._apply_style()
         self.setVisible(False)
 
     @property
@@ -1180,11 +1184,24 @@ class InlineFeedbackBanner(QFrame):
     def severity(self) -> str:
         return self._severity
 
-    def _refresh_style(self) -> None:
-        style = self.style()
-        style.unpolish(self)
-        style.polish(self)
-        self.update()
+    def _apply_style(self) -> None:
+        border, foreground, background = self._PALETTE.get(self._severity, self._PALETTE["info"])
+        self.setStyleSheet(
+            """
+            QLabel#StatusMessageLabel {
+                border: 1px solid %(border)s;
+                border-radius: 6px;
+                padding: 8px 12px;
+                color: %(foreground)s;
+                background-color: %(background)s;
+            }
+            """
+            % {
+                "border": border,
+                "foreground": foreground,
+                "background": background,
+            }
+        )
 
 
 def _refresh_widget_style(widget: QWidget) -> None:
@@ -1441,8 +1458,10 @@ class TeamManagementTab(QWidget):
         self.update_button = QPushButton("Update Selected")
         self.delete_button = QPushButton("Delete Selected")
 
-        self.table = QTableWidget(0, 2)
-        self.table.setHorizontalHeaderLabels(["Name", "Type"])
+        self.table = QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(
+            ["Name", "Type", "Rides as Driver", "Rides as Passenger"]
+        )
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
@@ -1450,12 +1469,15 @@ class TeamManagementTab(QWidget):
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
-        header.setMinimumSectionSize(120)
+        for index in range(1, self.table.columnCount()):
+            header.setSectionResizeMode(index, QHeaderView.ResizeMode.Interactive)
+        header.setMinimumSectionSize(100)
         header.sectionResized.connect(self._on_column_resized)
         self.table.setColumnWidth(1, 160)
+        self.table.setColumnWidth(2, 140)
+        self.table.setColumnWidth(3, 140)
 
-        self.feedback_banner = InlineFeedbackBanner(self)
+        self.status_label = StatusMessageLabel(self)
 
         self._build_layout()
         self._wire_signals()
@@ -1482,7 +1504,7 @@ class TeamManagementTab(QWidget):
         layout = QVBoxLayout(self)
         layout.setSpacing(20)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self.feedback_banner)
+        layout.addWidget(self.status_label)
         layout.addWidget(form_group)
         layout.addWidget(self.table, 1)
 
@@ -1494,6 +1516,15 @@ class TeamManagementTab(QWidget):
 
     def _emit_activity(self, severity: str, title: str, message: str) -> None:
         self.activity_event.emit(severity, title, message)
+
+    def _set_status(self, message: Sequence[str] | str, severity: str) -> None:
+        if isinstance(message, Sequence) and not isinstance(message, str):
+            self.status_label.show_messages(list(message), severity=severity)
+        else:
+            self.status_label.show_message(str(message), severity=severity)
+
+    def _clear_status(self) -> None:
+        self.status_label.clear()
 
     def apply_settings(self, settings: dict[str, Any]) -> None:
         widths = settings.get("team_table_column_widths")
@@ -1539,33 +1570,53 @@ class TeamManagementTab(QWidget):
         widths[index] = max(80, new)
         if index == 1:
             widths[index] = min(widths[index], 360)
+        elif index >= 2:
+            widths[index] = min(widths[index], 200)
         self._column_widths = widths
 
     def refresh_members(self) -> None:
-        members = [
-            TeamMember(member_id=row["id"], name=row["name"], is_core=bool(row["is_core"]))
-            for row in self.db_manager.fetch_team_members()
-        ]
-        self.table.setRowCount(len(members))
-        for row_index, member in enumerate(members):
+        rows = self.db_manager.fetch_team_members()
+        members: list[TeamMember] = []
+        self.table.setRowCount(len(rows))
+        for row_index, row in enumerate(rows):
+            member = TeamMember(
+                member_id=int(row["id"]),
+                name=str(row["name"]),
+                is_core=bool(row["is_core"]),
+                driver_count=int(row.get("driver_count", 0) or 0),
+                passenger_count=int(row.get("passenger_count", 0) or 0),
+            )
+            members.append(member)
+
             name_item = QTableWidgetItem(member.name)
             name_item.setData(Qt.ItemDataRole.UserRole, member.member_id)
             name_item.setData(Qt.ItemDataRole.UserRole + 1, member.is_core)
+            name_item.setData(Qt.ItemDataRole.UserRole + 2, member.driver_count)
+            name_item.setData(Qt.ItemDataRole.UserRole + 3, member.passenger_count)
             name_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
 
-            type_label = "Core" if member.is_core else "Reserve"
-            type_item = QTableWidgetItem(type_label)
+            type_item = QTableWidgetItem("Core" if member.is_core else "Reserve")
             type_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+
+            driver_item = QTableWidgetItem(str(member.driver_count))
+            driver_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+            driver_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+
+            passenger_item = QTableWidgetItem(str(member.passenger_count))
+            passenger_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+            passenger_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
 
             accent_color = QColor("#35c4c7") if member.is_core else QColor("#b3bed4")
             background_color = QColor("#103b43") if member.is_core else QColor("#232f44")
-            name_item.setForeground(accent_color)
-            type_item.setForeground(accent_color)
-            name_item.setBackground(background_color)
-            type_item.setBackground(background_color)
+            for item in (name_item, type_item, driver_item, passenger_item):
+                item.setForeground(accent_color)
+                item.setBackground(background_color)
 
             self.table.setItem(row_index, 0, name_item)
             self.table.setItem(row_index, 1, type_item)
+            self.table.setItem(row_index, 2, driver_item)
+            self.table.setItem(row_index, 3, passenger_item)
+
         self._restore_column_widths()
         self.table.resizeRowsToContents()
         self.members_changed.emit(members)
@@ -1580,7 +1631,7 @@ class TeamManagementTab(QWidget):
                 "apostrophes, or hyphens."
             )
             self._mark_invalid(self.name_input, message)
-            self.feedback_banner.show_message(message, severity="warning")
+            self._set_status(message, "warning")
             self._emit_activity("warning", "Roster validation", message)
             return None
         name = raw_text.strip()
@@ -1597,7 +1648,7 @@ class TeamManagementTab(QWidget):
         except sqlite3.IntegrityError:
             message = f"{name} is already on the roster. Try another name."
             self._mark_invalid(self.name_input, message)
-            self.feedback_banner.show_message(message, severity="error")
+            self._set_status(message, "error")
             self._emit_activity("error", "Roster update failed", message)
             return
         self.name_input.clear()
@@ -1605,7 +1656,7 @@ class TeamManagementTab(QWidget):
         self._selected_member = None
         self.refresh_members()
         self.table.clearSelection()
-        self.feedback_banner.show_message(f"Added {name} to the roster.", severity="success")
+        self._set_status(f"Added {name} to the roster.", "success")
         role_label = "core" if is_core else "reserve"
         self._emit_activity("success", "Roster updated", f"Added {name} as a {role_label} member.")
 
@@ -1616,7 +1667,7 @@ class TeamManagementTab(QWidget):
         if self._selected_member is None:
             message = "Select a team member in the table before updating."
             self._mark_invalid(self.table, message)
-            self.feedback_banner.show_message(message, severity="warning")
+            self._set_status(message, "warning")
             self._emit_activity("warning", "Roster update", "Update cancelled: no member selected.")
             return
         is_core = self._selected_type()
@@ -1625,7 +1676,7 @@ class TeamManagementTab(QWidget):
         except sqlite3.IntegrityError:
             message = f"{name} is already on the roster. Try another name."
             self._mark_invalid(self.name_input, message)
-            self.feedback_banner.show_message(message, severity="error")
+            self._set_status(message, "error")
             self._emit_activity("error", "Roster update failed", message)
             return
         self.name_input.clear()
@@ -1634,7 +1685,7 @@ class TeamManagementTab(QWidget):
         self.refresh_members()
         self.table.clearSelection()
         self._clear_invalid(self.table)
-        self.feedback_banner.show_message("Team member updated.", severity="success")
+        self._set_status("Team member updated.", "success")
         role_label = "core" if is_core else "reserve"
         self._emit_activity(
             "success", "Roster updated", f"Updated details for {name} ({role_label})."
@@ -1644,7 +1695,7 @@ class TeamManagementTab(QWidget):
         if self._selected_member is None:
             message = "Select a team member in the table before deleting."
             self._mark_invalid(self.table, message)
-            self.feedback_banner.show_message(message, severity="warning")
+            self._set_status(message, "warning")
             self._emit_activity(
                 "warning", "Roster update", "Deletion cancelled: no member selected."
             )
@@ -1655,7 +1706,7 @@ class TeamManagementTab(QWidget):
             message = (
                 f"{self._selected_member.name} is linked to existing rides and cannot be removed."
             )
-            self.feedback_banner.show_message(message, severity="error")
+            self._set_status(message, "error")
             self._emit_activity("error", "Roster update failed", message)
             return
         deleted_name = self._selected_member.name
@@ -1665,7 +1716,7 @@ class TeamManagementTab(QWidget):
         self.refresh_members()
         self.table.clearSelection()
         self._clear_invalid(self.table)
-        self.feedback_banner.show_message("Team member deleted.", severity="success")
+        self._set_status("Team member deleted.", "success")
         self._emit_activity("success", "Roster updated", f"Removed {deleted_name} from the roster.")
 
     def _on_table_selection_changed(self) -> None:
@@ -1678,11 +1729,13 @@ class TeamManagementTab(QWidget):
         member_id = int(item.data(Qt.ItemDataRole.UserRole))
         name = item.text()
         is_core = bool(item.data(Qt.ItemDataRole.UserRole + 1))
-        self._selected_member = TeamMember(member_id, name, is_core)
+        driver_count = int(item.data(Qt.ItemDataRole.UserRole + 2) or 0)
+        passenger_count = int(item.data(Qt.ItemDataRole.UserRole + 3) or 0)
+        self._selected_member = TeamMember(member_id, name, is_core, driver_count, passenger_count)
         self.name_input.setText(name)
         self._set_type_combo(is_core)
         self._clear_invalid(self.table)
-        self.feedback_banner.clear()
+        self._clear_status()
 
     def _selected_type(self) -> bool:
         data = self.member_type_combo.currentData(Qt.ItemDataRole.UserRole)
@@ -1700,8 +1753,8 @@ class TeamManagementTab(QWidget):
         state, *_ = self._name_validator.validate(text, 0)
         if state == QValidator.State.Acceptable:
             self._clear_invalid(self.name_input)
-            if self.feedback_banner.severity in {"warning", "error"}:
-                self.feedback_banner.clear()
+            if self.status_label.severity in {"warning", "error"}:
+                self._clear_status()
 
     def _mark_invalid(self, widget: QWidget, message: str | None = None) -> None:
         widget.setProperty("validationState", "error")
@@ -1874,7 +1927,7 @@ class RideSetupTab(QWidget):
         self._current_all_passenger_ids: list[int] = []
         self._current_driver_ids: list[int] = []
 
-        self.validation_banner = InlineFeedbackBanner(self)
+        self.validation_banner = StatusMessageLabel(self)
         self._layout_mode = "wide"
 
         self._build_layout()
@@ -3838,6 +3891,8 @@ class RideShareApp(QMainWindow):
                 member_id=row["id"],
                 name=row["name"],
                 is_core=bool(row["is_core"]),
+                driver_count=int(row.get("driver_count", 0) or 0),
+                passenger_count=int(row.get("passenger_count", 0) or 0),
             )
             for row in self.db_manager.fetch_team_members()
         ]
