@@ -1,7 +1,7 @@
 import pytest
 from pathlib import Path
 from typing import List
-from PyQt6.QtCore import QThreadPool
+from PyQt6.QtCore import QThreadPool, Qt
 from PyQt6.QtWidgets import QApplication
 
 from src.rideshare_app import (
@@ -140,5 +140,71 @@ def test_team_management_shows_participation_counts(
 
     assert participation.get("Driver Dave") == (1, 0)
     assert participation.get("Passenger Pam") == (0, 1)
+
+    tab.deleteLater()
+
+
+def test_ride_setup_driver_list_prioritises_experienced_and_separator(
+    db_manager: DatabaseManager, qapp
+):  # noqa: ARG001
+    maps_handler = _StubMapsHandler()
+    tab = RideSetupTab(db_manager, maps_handler, QThreadPool())
+
+    members = [
+        TeamMember(member_id=1, name="Alex", is_core=True, driver_count=2),
+        TeamMember(member_id=2, name="Bert", is_core=False),
+        TeamMember(member_id=3, name="Casey", is_core=True, driver_count=5),
+        TeamMember(member_id=4, name="Dana", is_core=False),
+    ]
+
+    tab.set_team_members(members)
+
+    driver_order: list[tuple[int, bool]] = []
+    separator_indexes: list[int] = []
+    for index in range(tab.driver_list.count()):
+        item = tab.driver_list.item(index)
+        if item.flags() == Qt.ItemFlag.NoItemFlags:
+            separator_indexes.append(index)
+            continue
+        driver_order.append(
+            (
+                int(item.data(Qt.ItemDataRole.UserRole)),
+                bool(item.data(Qt.ItemDataRole.UserRole + 4)),
+            )
+        )
+
+    assert driver_order == [(3, True), (1, True), (2, False), (4, False)]
+    assert separator_indexes == [2]
+    assert tab.driver_list.item(0).text().startswith("★ ")
+
+    tab.deleteLater()
+
+
+def test_ride_setup_passenger_list_prioritises_core_then_alphabetical(
+    db_manager: DatabaseManager, qapp
+):  # noqa: ARG001
+    maps_handler = _StubMapsHandler()
+    tab = RideSetupTab(db_manager, maps_handler, QThreadPool())
+
+    members = [
+        TeamMember(member_id=1, name="Zoe", is_core=False),
+        TeamMember(member_id=2, name="Alex", is_core=True),
+        TeamMember(member_id=3, name="Casey", is_core=True),
+        TeamMember(member_id=4, name="Bert", is_core=False),
+    ]
+
+    tab.set_team_members(members)
+
+    passenger_names = [
+        tab.passenger_list.item(index).text().split(" (")[0]
+        for index in range(tab.passenger_list.count())
+    ]
+    passenger_core_status = [
+        bool(tab.passenger_list.item(index).data(Qt.ItemDataRole.UserRole + 1))
+        for index in range(tab.passenger_list.count())
+    ]
+
+    assert passenger_names == ["Alex", "Casey", "Bert", "Zoe"]
+    assert passenger_core_status == [True, True, False, False]
 
     tab.deleteLater()

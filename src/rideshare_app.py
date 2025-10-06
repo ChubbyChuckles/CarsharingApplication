@@ -2272,14 +2272,37 @@ class RideSetupTab(QWidget):
         self.member_lookup = {member.member_id: member for member in members}
         self.driver_list.clear()
         self.passenger_list.clear()
-        for member in members:
-            driver_item = QListWidgetItem(self._format_member(member))
-            driver_item.setData(Qt.ItemDataRole.UserRole, member.member_id)
-            self.driver_list.addItem(driver_item)
 
-            passenger_item = QListWidgetItem(self._format_member(member))
-            passenger_item.setData(Qt.ItemDataRole.UserRole, member.member_id)
-            self.passenger_list.addItem(passenger_item)
+        experienced_drivers = sorted(
+            (member for member in members if member.driver_count > 0),
+            key=lambda member: (-member.driver_count, member.name.casefold()),
+        )
+        new_drivers = sorted(
+            (member for member in members if member.driver_count <= 0),
+            key=lambda member: member.name.casefold(),
+        )
+
+        for member in experienced_drivers:
+            self.driver_list.addItem(self._create_driver_item(member, experienced=True))
+
+        if experienced_drivers and new_drivers:
+            self.driver_list.addItem(self._create_driver_separator())
+
+        for member in new_drivers:
+            self.driver_list.addItem(self._create_driver_item(member, experienced=False))
+
+        core_passengers = sorted(
+            (member for member in members if member.is_core),
+            key=lambda member: member.name.casefold(),
+        )
+        reserve_passengers = sorted(
+            (member for member in members if not member.is_core),
+            key=lambda member: member.name.casefold(),
+        )
+
+        for collection in (core_passengers, reserve_passengers):
+            for member in collection:
+                self.passenger_list.addItem(self._create_passenger_item(member))
         self.driver_list.clearSelection()
         self.passenger_list.clearSelection()
         self._sync_driver_passenger_selection()
@@ -2415,6 +2438,56 @@ class RideSetupTab(QWidget):
     def _format_member(self, member: TeamMember) -> str:
         role = "Core" if member.is_core else "Reserve"
         return f"{member.name} ({role})"
+
+    def _create_driver_item(self, member: TeamMember, *, experienced: bool) -> QListWidgetItem:
+        display_text = self._format_member(member)
+        if experienced:
+            ride_label = "ride" if member.driver_count == 1 else "rides"
+            display_text = f"★ {display_text} · {member.driver_count} {ride_label}"
+        item = QListWidgetItem(display_text)
+        item.setData(Qt.ItemDataRole.UserRole, member.member_id)
+        item.setData(Qt.ItemDataRole.UserRole + 1, member.is_core)
+        item.setData(Qt.ItemDataRole.UserRole + 2, member.driver_count)
+        item.setData(Qt.ItemDataRole.UserRole + 3, member.passenger_count)
+        item.setData(Qt.ItemDataRole.UserRole + 4, experienced)
+
+        tooltip_base = "Previously drove in the carpool" if experienced else "Hasn't driven yet"
+        item.setToolTip(f"{tooltip_base}. Select to assign as a driver.")
+
+        accent_color = QColor("#f7d794") if experienced else QColor("#c7d2e3")
+        background_color = QColor("#3c2e1f") if experienced else QColor("#1b2738")
+        item.setForeground(accent_color)
+        item.setBackground(background_color)
+        if experienced:
+            font = item.font()
+            font.setBold(True)
+            item.setFont(font)
+        return item
+
+    def _create_driver_separator(self) -> QListWidgetItem:
+        separator_item = QListWidgetItem("──────────")
+        separator_item.setFlags(Qt.ItemFlag.NoItemFlags)
+        separator_item.setData(Qt.ItemDataRole.UserRole, None)
+        separator_item.setData(Qt.ItemDataRole.UserRole + 4, None)
+        separator_item.setForeground(QColor("#4f5d6f"))
+        separator_item.setBackground(QColor("#0f1724"))
+        separator_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        return separator_item
+
+    def _create_passenger_item(self, member: TeamMember) -> QListWidgetItem:
+        item = QListWidgetItem(self._format_member(member))
+        item.setData(Qt.ItemDataRole.UserRole, member.member_id)
+        item.setData(Qt.ItemDataRole.UserRole + 1, member.is_core)
+        item.setData(Qt.ItemDataRole.UserRole + 2, member.driver_count)
+        item.setData(Qt.ItemDataRole.UserRole + 3, member.passenger_count)
+
+        accent_color = QColor("#35c4c7") if member.is_core else QColor("#b3bed4")
+        background_color = QColor("#162338") if member.is_core else QColor("#1b2738")
+        item.setForeground(accent_color)
+        item.setBackground(background_color)
+        status = "Core" if member.is_core else "Reserve"
+        item.setToolTip(f"{status} member")
+        return item
 
     def _is_core_member(self, member_id: int) -> bool:
         member = self.member_lookup.get(member_id)
