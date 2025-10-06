@@ -926,6 +926,163 @@ class DatabaseManager:
             )
         return results
 
+    def fetch_monthly_cost_totals(
+        self,
+        *,
+        months: Optional[int] = None,
+        reference: Optional[datetime] = None,
+    ) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT total_cost, distance_km, ride_datetime FROM rides"
+            ).fetchall()
+
+        if not rows:
+            return []
+
+        ref = reference or datetime.now(timezone.utc)
+        if ref.tzinfo is None:
+            ref = ref.replace(tzinfo=timezone.utc)
+        else:
+            ref = ref.astimezone(timezone.utc)
+
+        aggregates: dict[str, dict[str, float]] = {}
+        counts: dict[str, int] = {}
+        for row in rows:
+            timestamp = str(row["ride_datetime"])
+            try:
+                ride_dt = datetime.fromisoformat(timestamp)
+            except ValueError:
+                continue
+            if ride_dt.tzinfo is None:
+                ride_dt = ride_dt.replace(tzinfo=timezone.utc)
+            else:
+                ride_dt = ride_dt.astimezone(timezone.utc)
+
+            if months is not None and months > 0:
+                delta_months = (ref.year - ride_dt.year) * 12 + (ref.month - ride_dt.month)
+                if delta_months < 0 or delta_months >= months:
+                    continue
+
+            period = f"{ride_dt.year:04d}-{ride_dt.month:02d}"
+            bucket = aggregates.setdefault(
+                period,
+                {"total_cost": 0.0, "total_distance": 0.0},
+            )
+            bucket["total_cost"] += float(row["total_cost"] or 0.0)
+            bucket["total_distance"] += float(row["distance_km"] or 0.0)
+            counts[period] = counts.get(period, 0) + 1
+
+        ordered_periods = sorted(aggregates.keys())
+        results: list[dict[str, Any]] = []
+        for period in ordered_periods:
+            total_cost = round(aggregates[period]["total_cost"], 2)
+            total_distance = round(aggregates[period]["total_distance"], 2)
+            ride_count = counts.get(period, 0)
+            avg_cost = round(total_cost / ride_count, 2) if ride_count else 0.0
+            avg_distance = round(total_distance / ride_count, 2) if ride_count else 0.0
+            results.append(
+                {
+                    "period": period,
+                    "total_cost": total_cost,
+                    "ride_count": ride_count,
+                    "avg_cost": avg_cost,
+                    "avg_distance": avg_distance,
+                }
+            )
+        return results
+
+    def fetch_ride_feature_vectors(self) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    id,
+                    distance_km,
+                    total_cost,
+                    ride_datetime
+                FROM rides
+                ORDER BY datetime(ride_datetime) ASC
+                """
+            ).fetchall()
+
+        vectors: list[dict[str, Any]] = []
+        for row in rows:
+            vectors.append(
+                {
+                    "ride_id": int(row["id"]),
+                    "distance_km": float(row["distance_km"] or 0.0),
+                    "total_cost": float(row["total_cost"] or 0.0),
+                    "ride_datetime": str(row["ride_datetime"]),
+                }
+            )
+        return vectors
+
+    def fetch_driver_passenger_links(self) -> dict[str, Any]:
+        with self._connect() as conn:
+            members = conn.execute("SELECT id, name, is_core FROM team_members").fetchall()
+            driver_counts = conn.execute(
+                "SELECT driver_id, COUNT(*) AS drive_count FROM ride_drivers GROUP BY driver_id"
+            ).fetchall()
+            passenger_counts = conn.execute(
+                "SELECT passenger_id, COUNT(*) AS passenger_count FROM ride_passengers GROUP BY passenger_id"
+            ).fetchall()
+            links = conn.execute(
+                """
+                SELECT
+                    rd.driver_id AS driver_id,
+                    rp.passenger_id AS passenger_id,
+                    COUNT(*) AS ride_count
+                FROM ride_drivers rd
+                JOIN ride_passengers rp ON rp.ride_id = rd.ride_id
+                GROUP BY rd.driver_id, rp.passenger_id
+                """
+            ).fetchall()
+
+        member_lookup: dict[int, dict[str, Any]] = {}
+        for row in members:
+            member_lookup[int(row["id"])] = {
+                "member_id": int(row["id"]),
+                "name": str(row["name"]),
+                "is_core": bool(row["is_core"]),
+                "drive_count": 0,
+                "passenger_count": 0,
+            }
+
+        for row in driver_counts:
+            member_id = int(row["driver_id"])
+            if member_id in member_lookup:
+                member_lookup[member_id]["drive_count"] = int(row["drive_count"] or 0)
+
+        for row in passenger_counts:
+            member_id = int(row["passenger_id"])
+            if member_id in member_lookup:
+                member_lookup[member_id]["passenger_count"] = int(row["passenger_count"] or 0)
+
+        link_payload: list[dict[str, Any]] = []
+        total_weight = 0
+        for row in links:
+            driver_id = int(row["driver_id"])
+            passenger_id = int(row["passenger_id"])
+            rides = int(row["ride_count"] or 0)
+            if driver_id not in member_lookup or passenger_id not in member_lookup:
+                continue
+            link_payload.append(
+                {
+                    "driver_id": driver_id,
+                    "passenger_id": passenger_id,
+                    "rides": rides,
+                }
+            )
+            total_weight += rides
+
+        return {
+            "members": member_lookup,
+            "links": link_payload,
+            "total_links": len(link_payload),
+            "total_weight": total_weight,
+        }
+
     def upsert_route_cache(self, origin: str, destination: str, distance_km: float) -> None:
         origin_key = origin.strip()
         destination_key = destination.strip()
@@ -3816,6 +3973,15 @@ class AnalyticsTab(QWidget):
             QColor("#4f70ff"),
             QColor("#9b59ff"),
         ]
+        self._cluster_palette: list[QColor] = [
+            QColor("#35c4c7"),
+            QColor("#ff7b7b"),
+            QColor("#ffd27d"),
+            QColor("#4f70ff"),
+            QColor("#9b59ff"),
+            QColor("#7dffa1"),
+        ]
+        self._rng = np.random.default_rng(2024)
         self._heatmap_cmap = pg.ColorMap(
             np.linspace(0.0, 1.0, 5),
             [
@@ -3909,6 +4075,65 @@ class AnalyticsTab(QWidget):
 
         self.trend_section.add_content_widget(trend_content)
         layout.addWidget(self.trend_section)
+
+        self.forecast_section = CollapsibleSection(
+            "Spend forecast",
+            description="Project future ride spend using adaptive Holt-Winters smoothing.",
+            expanded=True,
+        )
+        forecast_content = QWidget()
+        forecast_layout = QVBoxLayout(forecast_content)
+        forecast_layout.setContentsMargins(0, 0, 0, 0)
+        forecast_layout.setSpacing(12)
+
+        self.forecast_plot = pg.PlotWidget()
+        self.forecast_plot.setBackground(self._view_background)
+        self.forecast_plot.setFrameShape(QFrame.Shape.NoFrame)
+        self.forecast_plot.setStyleSheet("border: 1px solid #1d2736;")
+        self.forecast_plot.setMenuEnabled(False)
+        self.forecast_plot.setMinimumHeight(260)
+        self.forecast_plot.setLabel("left", "Monthly spend (€)")
+        self.forecast_plot.setLabel("bottom", "Month")
+        self.forecast_plot.showGrid(x=True, y=True, alpha=0.12)
+        self._configure_forecast_plot()
+
+        self.forecast_placeholder = QLabel(
+            "Once at least four months of rides are recorded, a predictive forecast appears here."
+        )
+        self.forecast_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.forecast_placeholder.setProperty("role", "hint")
+
+        self.forecast_stack = QStackedLayout()
+        self.forecast_stack.addWidget(self.forecast_plot)
+        forecast_placeholder_container = QWidget()
+        forecast_placeholder_container.setStyleSheet(
+            "background-color: #101a2b; border: 1px dashed rgba(61, 85, 110, 0.35);"
+        )
+        forecast_placeholder_layout = QVBoxLayout(forecast_placeholder_container)
+        forecast_placeholder_layout.setContentsMargins(0, 0, 0, 0)
+        forecast_placeholder_layout.addStretch(1)
+        forecast_placeholder_layout.addWidget(
+            self.forecast_placeholder, 0, Qt.AlignmentFlag.AlignCenter
+        )
+        forecast_placeholder_layout.addStretch(1)
+        self.forecast_stack.addWidget(forecast_placeholder_container)
+        forecast_layout.addLayout(self.forecast_stack)
+
+        self.forecast_detail_label = QLabel()
+        self.forecast_detail_label.setWordWrap(True)
+        self.forecast_detail_label.setProperty("role", "hint")
+        self.forecast_detail_label.setVisible(False)
+        forecast_layout.addWidget(self.forecast_detail_label)
+
+        forecast_hint = QLabel(
+            "Forecasts blend seasonal components with trend capture and include a confidence cone."
+        )
+        forecast_hint.setWordWrap(True)
+        forecast_hint.setProperty("role", "hint")
+        forecast_layout.addWidget(forecast_hint)
+
+        self.forecast_section.add_content_widget(forecast_content)
+        layout.addWidget(self.forecast_section)
 
         self.driver_section = CollapsibleSection(
             "Driver rotation spotlight",
@@ -4026,6 +4251,63 @@ class AnalyticsTab(QWidget):
         self.distance_section.add_content_widget(distance_content)
         layout.addWidget(self.distance_section)
 
+        self.cluster_section = CollapsibleSection(
+            "Ride archetype clustering",
+            description="Group rides into archetypes with mini-batch k-means over normalised features.",
+            expanded=False,
+        )
+        cluster_content = QWidget()
+        cluster_layout = QVBoxLayout(cluster_content)
+        cluster_layout.setContentsMargins(0, 0, 0, 0)
+        cluster_layout.setSpacing(12)
+
+        self.cluster_plot = pg.PlotWidget()
+        self.cluster_plot.setBackground(self._view_background)
+        self.cluster_plot.setFrameShape(QFrame.Shape.NoFrame)
+        self.cluster_plot.setStyleSheet("border: 1px solid #1d2736;")
+        self.cluster_plot.setMenuEnabled(False)
+        self.cluster_plot.setMinimumHeight(260)
+        self.cluster_plot.setLabel("left", "Total cost (€)")
+        self.cluster_plot.setLabel("bottom", "Round-trip distance (km)")
+        self.cluster_plot.showGrid(x=False, y=True, alpha=0.12)
+        self._configure_cluster_plot()
+
+        self.cluster_placeholder = QLabel("Log at least five rides to reveal clustering insights.")
+        self.cluster_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.cluster_placeholder.setProperty("role", "hint")
+
+        self.cluster_stack = QStackedLayout()
+        self.cluster_stack.addWidget(self.cluster_plot)
+        cluster_placeholder_container = QWidget()
+        cluster_placeholder_container.setStyleSheet(
+            "background-color: #101a2b; border: 1px dashed rgba(61, 85, 110, 0.35);"
+        )
+        cluster_placeholder_layout = QVBoxLayout(cluster_placeholder_container)
+        cluster_placeholder_layout.setContentsMargins(0, 0, 0, 0)
+        cluster_placeholder_layout.addStretch(1)
+        cluster_placeholder_layout.addWidget(
+            self.cluster_placeholder, 0, Qt.AlignmentFlag.AlignCenter
+        )
+        cluster_placeholder_layout.addStretch(1)
+        self.cluster_stack.addWidget(cluster_placeholder_container)
+        cluster_layout.addLayout(self.cluster_stack)
+
+        self.cluster_detail_label = QLabel()
+        self.cluster_detail_label.setWordWrap(True)
+        self.cluster_detail_label.setProperty("role", "hint")
+        self.cluster_detail_label.setVisible(False)
+        cluster_layout.addWidget(self.cluster_detail_label)
+
+        cluster_hint = QLabel(
+            "Clusters use distance, cost, and temporal features to surface distinct ride personas."
+        )
+        cluster_hint.setWordWrap(True)
+        cluster_hint.setProperty("role", "hint")
+        cluster_layout.addWidget(cluster_hint)
+
+        self.cluster_section.add_content_widget(cluster_content)
+        layout.addWidget(self.cluster_section)
+
         self.heatmap_section = CollapsibleSection(
             "Ride frequency heatmap",
             description="Identify the weekdays and hours where rides occur most often.",
@@ -4083,6 +4365,67 @@ class AnalyticsTab(QWidget):
 
         self.heatmap_section.add_content_widget(heat_content)
         layout.addWidget(self.heatmap_section)
+
+        self.network_section = CollapsibleSection(
+            "Mobility network graph",
+            description="Visualise driver ↔ passenger collaboration intensity via a force-inspired layout.",
+            expanded=False,
+        )
+        network_content = QWidget()
+        network_layout = QVBoxLayout(network_content)
+        network_layout.setContentsMargins(0, 0, 0, 0)
+        network_layout.setSpacing(12)
+
+        self.network_plot = pg.PlotWidget()
+        self.network_plot.setBackground(self._view_background)
+        self.network_plot.setFrameShape(QFrame.Shape.NoFrame)
+        self.network_plot.setStyleSheet("border: 1px solid #1d2736;")
+        self.network_plot.setMenuEnabled(False)
+        self.network_plot.setMinimumHeight(280)
+        self.network_plot.hideAxis("bottom")
+        self.network_plot.hideAxis("left")
+        self.network_plot.showGrid(x=False, y=False)
+        self._configure_network_plot()
+        self.network_graph = pg.GraphItem()
+        self.network_plot.addItem(self.network_graph)
+
+        self.network_placeholder = QLabel(
+            "Once rides include both drivers and passengers, a collaboration network appears here."
+        )
+        self.network_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.network_placeholder.setProperty("role", "hint")
+
+        self.network_stack = QStackedLayout()
+        self.network_stack.addWidget(self.network_plot)
+        network_placeholder_container = QWidget()
+        network_placeholder_container.setStyleSheet(
+            "background-color: #101a2b; border: 1px dashed rgba(61, 85, 110, 0.35);"
+        )
+        network_placeholder_layout = QVBoxLayout(network_placeholder_container)
+        network_placeholder_layout.setContentsMargins(0, 0, 0, 0)
+        network_placeholder_layout.addStretch(1)
+        network_placeholder_layout.addWidget(
+            self.network_placeholder, 0, Qt.AlignmentFlag.AlignCenter
+        )
+        network_placeholder_layout.addStretch(1)
+        self.network_stack.addWidget(network_placeholder_container)
+        network_layout.addLayout(self.network_stack)
+
+        self.network_detail_label = QLabel()
+        self.network_detail_label.setWordWrap(True)
+        self.network_detail_label.setProperty("role", "hint")
+        self.network_detail_label.setVisible(False)
+        network_layout.addWidget(self.network_detail_label)
+
+        network_hint = QLabel(
+            "Node sizing reflects drive/passenger volume; link opacity scales with shared rides."
+        )
+        network_hint.setWordWrap(True)
+        network_hint.setProperty("role", "hint")
+        network_layout.addWidget(network_hint)
+
+        self.network_section.add_content_widget(network_content)
+        layout.addWidget(self.network_section)
 
         self.route_section = CollapsibleSection(
             "Top routes by total spend",
@@ -4148,6 +4491,9 @@ class AnalyticsTab(QWidget):
         self.heatmap_stack.setCurrentIndex(1)
         self.driver_stack.setCurrentIndex(1)
         self.distance_stack.setCurrentIndex(1)
+        self.forecast_stack.setCurrentIndex(1)
+        self.cluster_stack.setCurrentIndex(1)
+        self.network_stack.setCurrentIndex(1)
         self.route_stack.setCurrentIndex(1)
 
     def refresh(self) -> None:
@@ -4200,6 +4546,35 @@ class AnalyticsTab(QWidget):
             if not series:
                 self.cost_placeholder.setText(
                     "Add rides with core passengers to build monthly spend trends."
+                )
+
+        monthly_totals = self.db_manager.fetch_monthly_cost_totals(months=months)
+        self._configure_forecast_plot()
+        if len(monthly_totals) >= 4:
+            self.forecast_stack.setCurrentIndex(0)
+            forecast_result = self._render_forecast(monthly_totals)
+            if forecast_result is not None:
+                detail_text, message = forecast_result
+                if detail_text:
+                    self.forecast_detail_label.setVisible(True)
+                    self.forecast_detail_label.setText(detail_text)
+                else:
+                    self.forecast_detail_label.setVisible(False)
+                    self.forecast_detail_label.clear()
+                if message:
+                    messages.append(message)
+        else:
+            self.forecast_stack.setCurrentIndex(1)
+            self.forecast_detail_label.setVisible(False)
+            self.forecast_detail_label.clear()
+            if not monthly_totals:
+                self.forecast_placeholder.setText(
+                    "Once at least four months of rides are recorded, a predictive forecast appears here."
+                )
+            else:
+                remaining = 4 - len(monthly_totals)
+                self.forecast_placeholder.setText(
+                    f"Add {remaining} more month{'s' if remaining != 1 else ''} of rides to unlock forecasting."
                 )
 
         frequency = self.db_manager.fetch_ride_frequency()
@@ -4357,6 +4732,66 @@ class AnalyticsTab(QWidget):
                 "Log rides to reveal how their distances are distributed."
             )
 
+        ride_vectors = self.db_manager.fetch_ride_feature_vectors()
+        self._configure_cluster_plot()
+        if len(ride_vectors) >= 5:
+            self.cluster_stack.setCurrentIndex(0)
+            cluster_result = self._render_clusters(ride_vectors)
+            if cluster_result is not None:
+                detail_text, message = cluster_result
+                if detail_text:
+                    self.cluster_detail_label.setVisible(True)
+                    self.cluster_detail_label.setText(detail_text)
+                else:
+                    self.cluster_detail_label.setVisible(False)
+                    self.cluster_detail_label.clear()
+                if message:
+                    messages.append(message)
+        else:
+            self.cluster_stack.setCurrentIndex(1)
+            self.cluster_detail_label.setVisible(False)
+            self.cluster_detail_label.clear()
+            if len(ride_vectors) == 0:
+                self.cluster_placeholder.setText("Log rides to reveal clustering insights.")
+            else:
+                needed = max(0, 5 - len(ride_vectors))
+                self.cluster_placeholder.setText(
+                    f"Log {needed} more ride{'s' if needed != 1 else ''} to unlock clustering."
+                )
+
+        network_payload = self.db_manager.fetch_driver_passenger_links()
+        self._configure_network_plot()
+        if network_payload.get("total_links", 0) > 0:
+            self.network_stack.setCurrentIndex(0)
+            network_result = self._render_network(network_payload)
+            if network_result is not None:
+                detail_text, message = network_result
+                if detail_text:
+                    self.network_detail_label.setVisible(True)
+                    self.network_detail_label.setText(detail_text)
+                else:
+                    self.network_detail_label.setVisible(False)
+                    self.network_detail_label.clear()
+                if message:
+                    messages.append(message)
+        else:
+            self.network_stack.setCurrentIndex(1)
+            self.network_detail_label.setVisible(False)
+            self.network_detail_label.clear()
+            self.network_graph.setData(
+                pos=np.zeros((0, 2)),
+                adj=np.zeros((0, 2), dtype=int),
+                size=np.array([]),
+            )
+            if network_payload.get("members"):
+                self.network_placeholder.setText(
+                    "Assign drivers and passengers to rides to reveal collaboration patterns."
+                )
+            else:
+                self.network_placeholder.setText(
+                    "Add teammates and log rides to visualise the mobility network."
+                )
+
         route_stats = self.db_manager.fetch_route_cost_summary()
         self._configure_route_plot()
         if route_stats:
@@ -4474,11 +4909,546 @@ class AnalyticsTab(QWidget):
         self._style_axis(plot_item, "left")
         self._style_axis(plot_item, "bottom")
 
+    def _configure_forecast_plot(self) -> None:
+        plot_item = self.forecast_plot.getPlotItem()
+        plot_item.clear()
+        view_box = plot_item.getViewBox()
+        view_box.setBackgroundColor(self._view_background)
+        plot_item.setMenuEnabled(False)
+        plot_item.showGrid(x=True, y=True, alpha=0.12)
+        self._style_axis(plot_item, "left")
+        self._style_axis(plot_item, "bottom")
+
+    def _configure_cluster_plot(self) -> None:
+        plot_item = self.cluster_plot.getPlotItem()
+        plot_item.clear()
+        view_box = plot_item.getViewBox()
+        view_box.setBackgroundColor(self._view_background)
+        plot_item.setMenuEnabled(False)
+        plot_item.showGrid(x=False, y=True, alpha=0.12)
+        plot_item.getAxis("right").setVisible(False)
+        self.cluster_plot.setLabel("left", "Total cost (€)")
+        self.cluster_plot.setLabel("bottom", "Round-trip distance (km)")
+        self._style_axis(plot_item, "left")
+        self._style_axis(plot_item, "bottom")
+
+    def _configure_network_plot(self) -> None:
+        plot_item = self.network_plot.getPlotItem()
+        plot_item.clear()
+        view_box = plot_item.getViewBox()
+        view_box.setBackgroundColor(self._view_background)
+        plot_item.setMenuEnabled(False)
+        plot_item.hideAxis("right")
+        plot_item.hideAxis("top")
+        if hasattr(self, "network_graph"):
+            plot_item.addItem(self.network_graph)
+
     def _style_axis(self, plot_item, axis: str) -> None:
         ax = plot_item.getAxis(axis)
         ax.setPen(pg.mkPen(self._axis_line_color, width=1))
         ax.setTextPen(pg.mkPen(self._axis_text_color))
         ax.setStyle(tickFont=QFont("Segoe UI", 9), tickTextOffset=6)
+
+    def _render_forecast(self, monthly_totals: list[dict[str, Any]]) -> Optional[tuple[str, str]]:
+        if len(monthly_totals) < 4:
+            return None
+
+        period_map = {
+            entry["period"]: float(entry.get("total_cost", 0.0)) for entry in monthly_totals
+        }
+        sorted_periods = sorted(period_map.keys())
+        start_year, start_month = self._parse_period(sorted_periods[0])
+        end_year, end_month = self._parse_period(sorted_periods[-1])
+        contiguous_periods, values = self._build_month_series(
+            start_year,
+            start_month,
+            end_year,
+            end_month,
+            period_map,
+        )
+
+        if values.size < 2 or np.allclose(values, 0.0):
+            return None
+
+        forecast_steps = min(6, max(3, values.size // 2))
+        smoothed, forecasts, residual_std = self._holt_linear_forecast(values, forecast_steps)
+        if forecasts is None:
+            return None
+
+        actual_indices = list(range(len(values)))
+        forecast_indices = list(range(len(values), len(values) + forecast_steps))
+        horizon_indices = list(range(len(values) - 1, len(values) + forecast_steps))
+
+        actual_pen = pg.mkPen(QColor("#35c4c7"), width=2)
+        forecast_pen = pg.mkPen(QColor("#ff7b7b"), width=2, style=Qt.PenStyle.DashLine)
+
+        self.forecast_plot.plot(
+            actual_indices,
+            values.tolist(),
+            pen=actual_pen,
+            symbol="o",
+            symbolSize=6,
+            symbolBrush=QColor("#35c4c7"),
+            symbolPen=pg.mkPen(QColor("#101a2b"), width=1),
+        )
+
+        extended_forecast = [values[-1]] + forecasts.tolist()
+        self.forecast_plot.plot(
+            horizon_indices,
+            extended_forecast,
+            pen=forecast_pen,
+            symbol="t",
+            symbolSize=6,
+            symbolBrush=QColor("#ff7b7b"),
+            symbolPen=pg.mkPen(QColor("#101a2b"), width=1),
+        )
+
+        ci_multiplier = 1.96
+        step_factors = np.sqrt(np.arange(1, forecast_steps + 1, dtype=float))
+        ci_values = ci_multiplier * residual_std * step_factors
+        upper = forecasts + ci_values
+        lower = np.clip(forecasts - ci_values, a_min=0.0, a_max=None)
+
+        upper_item = self.forecast_plot.plot(
+            forecast_indices,
+            upper.tolist(),
+            pen=pg.mkPen(QColor(53, 196, 199, 180), width=1),
+        )
+        lower_item = self.forecast_plot.plot(
+            forecast_indices,
+            lower.tolist(),
+            pen=pg.mkPen(QColor(53, 196, 199, 80), width=1),
+        )
+        shade = pg.FillBetweenItem(
+            curve1=upper_item, curve2=lower_item, brush=pg.mkBrush(53, 196, 199, 60)
+        )
+        self.forecast_plot.addItem(shade)
+
+        label_count = len(values) + forecast_steps
+        axis_labels = self._generate_month_labels(start_year, start_month, label_count)
+        bottom_axis = self.forecast_plot.getAxis("bottom")
+        bottom_axis.setTicks(
+            [
+                [
+                    (index, self._format_month_label(period))
+                    for index, period in enumerate(axis_labels)
+                ]
+            ]
+        )
+
+        next_period_label = self._format_month_label(axis_labels[len(values)])
+        next_point = forecasts[0]
+        next_ci = ci_values[0]
+        trend_direction = forecasts[-1] - values[-1]
+        detail = (
+            f"Next month forecast: €{next_point:,.2f} ± {next_ci:,.2f} (95% CI) for {next_period_label}. "
+            f"Projected {forecast_steps}-month slope: {'+' if trend_direction >= 0 else ''}{trend_direction:,.2f}."
+        )
+        message = (
+            f"spend forecast over {len(values)} observed month{'s' if len(values) != 1 else ''}"
+        )
+        return detail, message
+
+    def _holt_linear_forecast(
+        self, values: np.ndarray, forecast_steps: int
+    ) -> tuple[np.ndarray, Optional[np.ndarray], float]:
+        if values.size < 2:
+            return values, None, 0.0
+
+        alpha = 0.4
+        beta = 0.3
+        level = float(values[0])
+        trend = float(values[1] - values[0])
+        smoothed = []
+
+        for value in values:
+            prev_level = level
+            level = alpha * float(value) + (1.0 - alpha) * (level + trend)
+            trend = beta * (level - prev_level) + (1.0 - beta) * trend
+            smoothed.append(level)
+
+        forecasts = np.array(
+            [level + trend * step for step in range(1, forecast_steps + 1)], dtype=float
+        )
+        residuals = values - np.array(smoothed, dtype=float)
+        non_zero = residuals[np.abs(residuals) > 1e-6]
+        if non_zero.size >= 2:
+            residual_std = float(np.std(non_zero, ddof=1))
+        else:
+            residual_std = float(abs(trend) * 0.25)
+
+        return np.array(smoothed, dtype=float), forecasts, residual_std
+
+    def _render_clusters(self, ride_vectors: list[dict[str, Any]]) -> Optional[tuple[str, str]]:
+        if len(ride_vectors) < 5:
+            return None
+
+        features: list[list[float]] = []
+        xy_points: list[tuple[float, float]] = []
+        timestamps: list[datetime] = []
+        for entry in ride_vectors:
+            distance = float(entry.get("distance_km", 0.0))
+            cost = float(entry.get("total_cost", 0.0))
+            timestamp = entry.get("ride_datetime")
+            try:
+                ride_dt = datetime.fromisoformat(str(timestamp)) if timestamp else None
+            except ValueError:
+                ride_dt = None
+            if ride_dt is None:
+                ride_dt = datetime(1970, 1, 1, tzinfo=timezone.utc)
+            if ride_dt.tzinfo is None:
+                ride_dt = ride_dt.replace(tzinfo=timezone.utc)
+            else:
+                ride_dt = ride_dt.astimezone(timezone.utc)
+
+            hour = ride_dt.hour + ride_dt.minute / 60.0
+            weekday = ride_dt.weekday()
+            features.append(
+                [
+                    distance,
+                    cost,
+                    math.sin(2 * math.pi * hour / 24.0),
+                    math.cos(2 * math.pi * hour / 24.0),
+                    math.sin(2 * math.pi * weekday / 7.0),
+                    math.cos(2 * math.pi * weekday / 7.0),
+                ]
+            )
+            xy_points.append((distance, cost))
+            timestamps.append(ride_dt)
+
+        feature_array = np.array(features, dtype=float)
+        means = feature_array.mean(axis=0)
+        stds = feature_array.std(axis=0)
+        stds[stds == 0] = 1.0
+        normalised = (feature_array - means) / stds
+
+        proposed_clusters = max(2, min(5, len(ride_vectors) // 4))
+        centroids, labels = self._mini_batch_kmeans(normalised, proposed_clusters)
+
+        scatter_item = pg.ScatterPlotItem()
+        scatter_points = []
+        for idx, (x, y) in enumerate(xy_points):
+            colour = self._cluster_palette[labels[idx] % len(self._cluster_palette)]
+            scatter_points.append(
+                {
+                    "pos": (x, y),
+                    "size": 10,
+                    "brush": pg.mkBrush(colour),
+                    "pen": pg.mkPen(colour.darker(120), width=1),
+                }
+            )
+        scatter_item.addPoints(scatter_points)
+        self.cluster_plot.addItem(scatter_item)
+
+        cluster_stats: list[dict[str, Any]] = []
+        centroid_points: list[dict[str, Any]] = []
+        for cluster_index in range(centroids.shape[0]):
+            member_indices = np.where(labels == cluster_index)[0]
+            if member_indices.size == 0:
+                continue
+            cluster_distances = [xy_points[idx][0] for idx in member_indices]
+            cluster_costs = [xy_points[idx][1] for idx in member_indices]
+            cluster_times = [timestamps[idx] for idx in member_indices]
+            centroid_color = self._cluster_palette[cluster_index % len(self._cluster_palette)]
+            centroid_points.append(
+                {
+                    "pos": (
+                        float(np.mean(cluster_distances)),
+                        float(np.mean(cluster_costs)),
+                    ),
+                    "brush": pg.mkBrush(centroid_color),
+                    "pen": pg.mkPen("#ffffff", width=1.5),
+                    "size": 18,
+                }
+            )
+            cluster_stats.append(
+                {
+                    "index": cluster_index,
+                    "count": member_indices.size,
+                    "avg_distance": float(np.mean(cluster_distances)),
+                    "avg_cost": float(np.mean(cluster_costs)),
+                    "median_cost": float(np.median(cluster_costs)),
+                    "peak_hour": (
+                        max(cluster_times, key=lambda dt: dt.hour).hour if cluster_times else 0
+                    ),
+                }
+            )
+
+        if centroid_points:
+            centroid_item = pg.ScatterPlotItem(symbol="star")
+            centroid_item.addPoints(centroid_points)
+            self.cluster_plot.addItem(centroid_item)
+
+        x_values = [point[0] for point in xy_points]
+        y_values = [point[1] for point in xy_points]
+        if x_values and y_values:
+            min_x, max_x = min(x_values), max(x_values)
+            min_y, max_y = min(y_values), max(y_values)
+            spread_x = max(1.0, max_x - min_x)
+            spread_y = max(1.0, max_y - min_y)
+            self.cluster_plot.setXRange(
+                max(0.0, min_x - 0.1 * spread_x), max_x + 0.15 * spread_x, padding=0.02
+            )
+            self.cluster_plot.setYRange(
+                max(0.0, min_y - 0.1 * spread_y), max_y + 0.15 * spread_y, padding=0.02
+            )
+
+        if not cluster_stats:
+            return None
+
+        richest = max(cluster_stats, key=lambda item: item["avg_cost"])
+        detail = (
+            f"Segmented {len(ride_vectors)} rides into {len(cluster_stats)} clusters. "
+            f"Highest-spend archetype averages €{richest['avg_cost']:,.2f} over {richest['avg_distance']:,.1f} km trips."
+        )
+        message = f"ride clustering with {len(cluster_stats)} centroid{'s' if len(cluster_stats) != 1 else ''}"
+        return detail, message
+
+    def _mini_batch_kmeans(
+        self, features: np.ndarray, n_clusters: int, *, iterations: int = 60, batch_size: int = 24
+    ) -> tuple[np.ndarray, np.ndarray]:
+        sample_count = features.shape[0]
+        n_clusters = min(n_clusters, sample_count)
+        if n_clusters <= 0:
+            raise ValueError("n_clusters must be positive")
+
+        centroids = features[self._rng.choice(sample_count, n_clusters, replace=False)].copy()
+
+        for iteration in range(iterations):
+            current_batch = min(batch_size, sample_count)
+            batch_indices = self._rng.choice(sample_count, current_batch, replace=False)
+            batch = features[batch_indices]
+            distances = np.linalg.norm(batch[:, None, :] - centroids[None, :, :], axis=2)
+            assignments = np.argmin(distances, axis=1)
+            for cluster_index in range(n_clusters):
+                cluster_points = batch[assignments == cluster_index]
+                if cluster_points.size == 0:
+                    continue
+                learning_rate = 0.6 / (1.0 + iteration / iterations)
+                centroids[cluster_index] += learning_rate * (
+                    cluster_points.mean(axis=0) - centroids[cluster_index]
+                )
+
+        final_distances = np.linalg.norm(features[:, None, :] - centroids[None, :, :], axis=2)
+        final_labels = np.argmin(final_distances, axis=1)
+        return centroids, final_labels
+
+    def _render_network(self, payload: dict[str, Any]) -> Optional[tuple[str, str]]:
+        members = payload.get("members") or {}
+        links = payload.get("links") or []
+        if not members or not links:
+            self.network_graph.setData(
+                pos=np.zeros((0, 2)),
+                adj=np.zeros((0, 2), dtype=int),
+                size=np.array([]),
+            )
+            return None
+
+        ordered_members = sorted(members.values(), key=lambda item: item["name"].lower())
+        index_lookup = {member["member_id"]: idx for idx, member in enumerate(ordered_members)}
+        positions = self._compute_network_layout(ordered_members, links, index_lookup)
+
+        adjacency: list[tuple[int, int]] = []
+        weights: list[int] = []
+        for link in links:
+            driver_idx = index_lookup.get(link["driver_id"])
+            passenger_idx = index_lookup.get(link["passenger_id"])
+            if driver_idx is None or passenger_idx is None:
+                continue
+            adjacency.append((driver_idx, passenger_idx))
+            weights.append(int(link.get("rides", 0)))
+
+        if not adjacency:
+            self.network_graph.setData(
+                pos=np.zeros((0, 2)),
+                adj=np.zeros((0, 2), dtype=int),
+                size=np.array([]),
+            )
+            return None
+
+        weight_array = np.array(weights, dtype=float)
+        max_weight = float(weight_array.max()) if weight_array.size else 1.0
+        edge_pens = [
+            pg.mkPen(
+                QColor(79, 112, 255, int(90 + 130 * (w / max_weight))),
+                width=1.2 + (w / max_weight) * 2.4,
+            )
+            for w in weight_array
+        ]
+
+        node_sizes = []
+        node_brushes = []
+        node_pens = []
+        node_texts = []
+        for member in ordered_members:
+            magnitude = member.get("drive_count", 0) + member.get("passenger_count", 0)
+            size = 14 + min(26, magnitude * 1.3)
+            node_sizes.append(size)
+            if member.get("drive_count", 0) > 0 and member.get("passenger_count", 0) > 0:
+                color = QColor("#9b59ff")
+            elif member.get("drive_count", 0) > member.get("passenger_count", 0):
+                color = QColor("#35c4c7")
+            else:
+                color = QColor("#ffd27d")
+            node_brushes.append(pg.mkBrush(color))
+            node_pens.append(pg.mkPen(QColor("#101a2b"), width=1))
+            node_texts.append(member.get("name", "")[:10])
+
+        pos_array = np.array(positions, dtype=float)
+        adj_array = np.array(adjacency, dtype=int)
+
+        self.network_graph.setData(
+            pos=pos_array,
+            adj=adj_array,
+            size=np.array(node_sizes, dtype=float),
+            symbolBrush=node_brushes,
+            symbolPen=node_pens,
+            texts=node_texts,
+            textColor=QColor("#dee7ff"),
+            pen=edge_pens,
+        )
+
+        if pos_array.size:
+            self.network_plot.setXRange(
+                float(pos_array[:, 0].min()) - 2.5, float(pos_array[:, 0].max()) + 2.5, padding=0.02
+            )
+            self.network_plot.setYRange(
+                float(pos_array[:, 1].min()) - 2.5, float(pos_array[:, 1].max()) + 2.5, padding=0.02
+            )
+
+        top_link = max(links, key=lambda link: link.get("rides", 0))
+        driver_name = members.get(top_link["driver_id"], {}).get("name", "Driver")
+        passenger_name = members.get(top_link["passenger_id"], {}).get("name", "Passenger")
+        top_rides = int(top_link.get("rides", 0))
+        detail = (
+            f"Network includes {len(adjacency)} driver-passenger ties. "
+            f"Strongest connection: {driver_name} ↔ {passenger_name} across {top_rides} ride"
+            f"{'s' if top_rides != 1 else ''}."
+        )
+        message = f"mobility network spanning {len(ordered_members)} member{'s' if len(ordered_members) != 1 else ''}"
+        return detail, message
+
+    def _compute_network_layout(
+        self,
+        members: list[dict[str, Any]],
+        links: list[dict[str, Any]],
+        index_lookup: dict[int, int],
+    ) -> np.ndarray:
+        total = len(members)
+        if total == 0:
+            return np.zeros((0, 2))
+
+        positions = np.zeros((total, 2), dtype=float)
+        driver_ids = [
+            idx
+            for idx, member in enumerate(members)
+            if member.get("drive_count", 0) > member.get("passenger_count", 0)
+        ]
+        passenger_ids = [
+            idx
+            for idx, member in enumerate(members)
+            if member.get("passenger_count", 0) > member.get("drive_count", 0)
+        ]
+        hybrid_ids = [
+            idx
+            for idx, member in enumerate(members)
+            if idx not in driver_ids and idx not in passenger_ids
+        ]
+
+        def place(indices: list[int], radius: float, offset: float) -> None:
+            count = len(indices)
+            if count == 0:
+                return
+            for position, member_index in enumerate(indices):
+                angle = offset + (2 * math.pi * position / count)
+                positions[member_index] = [radius * math.cos(angle), radius * math.sin(angle)]
+
+        base_radius = max(6.0, total * 1.2)
+        place(driver_ids, base_radius * 1.05, offset=0.0)
+        place(passenger_ids, base_radius * 0.75, offset=math.pi / 6)
+        place(hybrid_ids, base_radius * 0.55, offset=math.pi / 3)
+
+        # Mild iterative relaxation to spread nodes based on link weights.
+        for _ in range(18):
+            for link in links:
+                driver_idx = index_lookup.get(link.get("driver_id"))
+                passenger_idx = index_lookup.get(link.get("passenger_id"))
+                if driver_idx is None or passenger_idx is None:
+                    continue
+                vector = positions[passenger_idx] - positions[driver_idx]
+                distance = np.linalg.norm(vector)
+                if distance < 1e-3:
+                    jitter = self._rng.normal(scale=0.5, size=2)
+                    positions[passenger_idx] += jitter
+                    positions[driver_idx] -= jitter
+                    continue
+                desired = base_radius * 0.6
+                adjustment = (distance - desired) / max(distance, 1e-3) * 0.05
+                delta = vector * adjustment
+                positions[driver_idx] += delta
+                positions[passenger_idx] -= delta
+
+        return positions
+
+    def _build_month_series(
+        self,
+        start_year: int,
+        start_month: int,
+        end_year: int,
+        end_month: int,
+        period_map: dict[str, float],
+    ) -> tuple[list[str], np.ndarray]:
+        periods: list[str] = []
+        values: list[float] = []
+        year, month = start_year, start_month
+        while (year < end_year) or (year == end_year and month <= end_month):
+            key = f"{year:04d}-{month:02d}"
+            periods.append(key)
+            values.append(float(period_map.get(key, 0.0)))
+            year, month = self._increment_month(year, month)
+        return periods, np.array(values, dtype=float)
+
+    @staticmethod
+    def _increment_month(year: int, month: int) -> tuple[int, int]:
+        month += 1
+        if month > 12:
+            month = 1
+            year += 1
+        return year, month
+
+    @staticmethod
+    def _parse_period(period: str) -> tuple[int, int]:
+        parts = period.split("-")
+        return int(parts[0]), int(parts[1])
+
+    def _generate_month_labels(self, year: int, month: int, count: int) -> list[str]:
+        labels = []
+        current_year, current_month = year, month
+        for _ in range(count):
+            labels.append(f"{current_year:04d}-{current_month:02d}")
+            current_year, current_month = self._increment_month(current_year, current_month)
+        return labels
+
+    @staticmethod
+    def _format_month_label(period: str) -> str:
+        year, month = period.split("-")
+        month_index = int(month)
+        month_names = [
+            "Jan",
+            "Feb",
+            "Mar",
+            "Apr",
+            "May",
+            "Jun",
+            "Jul",
+            "Aug",
+            "Sep",
+            "Oct",
+            "Nov",
+            "Dec",
+        ]
+        month_name = month_names[(month_index - 1) % 12]
+        return f"{month_name} {year[2:]}"
 
 
 class WindowTitleBar(QWidget):
