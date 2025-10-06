@@ -37,8 +37,8 @@ def _seed_sample_data(db: DatabaseManager) -> Tuple[int, int, int]:
         fee_per_km=0.45,
         total_cost=30.0,
         cost_per_passenger=15.0,
+        ride_datetime=datetime(2025, 8, 18, 10, 30, tzinfo=timezone.utc),
     )
-    _set_ride_timestamp(db, ride_one, "2025-08-18T10:30:00+00:00")
 
     ride_two = db.record_ride(
         start_address="Training Hall",
@@ -51,8 +51,8 @@ def _seed_sample_data(db: DatabaseManager) -> Tuple[int, int, int]:
         fee_per_km=0.50,
         total_cost=20.0,
         cost_per_passenger=20.0,
+        ride_datetime=datetime(2025, 9, 12, 18, 5, tzinfo=timezone.utc),
     )
-    _set_ride_timestamp(db, ride_two, "2025-09-12T18:05:00+00:00")
 
     ride_three = db.record_ride(
         start_address="Clubhouse",
@@ -65,16 +65,10 @@ def _seed_sample_data(db: DatabaseManager) -> Tuple[int, int, int]:
         fee_per_km=0.40,
         total_cost=10.0,
         cost_per_passenger=10.0,
+        ride_datetime=datetime(2025, 10, 2, 9, 15, tzinfo=timezone.utc),
     )
-    _set_ride_timestamp(db, ride_three, "2025-10-02T09:15:00+00:00")
 
     return alice, ben, chloe
-
-
-def _set_ride_timestamp(db: DatabaseManager, ride_id: int, timestamp: str) -> None:
-    with db._connect() as conn:  # type: ignore[attr-defined]
-        conn.execute("UPDATE rides SET ride_datetime = ? WHERE id = ?", (timestamp, ride_id))
-        conn.commit()
 
 
 def test_member_cost_trends_grouped_by_month(db_manager: DatabaseManager) -> None:

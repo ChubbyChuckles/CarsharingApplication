@@ -38,6 +38,7 @@ import pyqtgraph as pg
 from dotenv import load_dotenv
 from googlemaps.exceptions import ApiError, TransportError
 from PyQt6.QtCore import (
+    QDateTime,
     QObject,
     QRunnable,
     QThreadPool,
@@ -64,6 +65,7 @@ from PyQt6.QtWidgets import (
     QApplication,
     QAbstractItemView,
     QComboBox,
+    QDateTimeEdit,
     QCompleter,
     QDoubleSpinBox,
     QFileDialog,
@@ -549,6 +551,7 @@ class DatabaseManager:
         fee_per_km: float,
         total_cost: float,
         cost_per_passenger: float,
+        ride_datetime: datetime | None = None,
     ) -> int:
         driver_ids = [int(driver_id) for driver_id in driver_ids]
         if not driver_ids:
@@ -556,7 +559,12 @@ class DatabaseManager:
 
         passenger_ids = [int(pid) for pid in passenger_ids]
         paying_passenger_ids = [int(pid) for pid in paying_passenger_ids]
-        timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        recorded_at = ride_datetime or datetime.now(timezone.utc)
+        if recorded_at.tzinfo is None:
+            recorded_at = recorded_at.replace(tzinfo=timezone.utc)
+        else:
+            recorded_at = recorded_at.astimezone(timezone.utc)
+        timestamp = recorded_at.isoformat(timespec="seconds")
         primary_driver_id = driver_ids[0]
         with self._connect() as conn:
             cursor = conn.execute(
@@ -1753,6 +1761,74 @@ class RideSetupTab(QWidget):
         self._update_history_popup_width(self.start_history_combo)
         self._update_history_popup_width(self.dest_history_combo)
 
+        self.ride_datetime_input = QDateTimeEdit()
+        self.ride_datetime_input.setCalendarPopup(True)
+        self.ride_datetime_input.setDisplayFormat("yyyy-MM-dd HH:mm")
+        self.ride_datetime_input.setDateTime(QDateTime.currentDateTime())
+        self.ride_datetime_input.setMinimumWidth(0)
+        self.ride_datetime_input.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
+        self.ride_datetime_input.setStyleSheet(
+            """
+            QDateTimeEdit {
+                background-color: #1f2a36;
+                color: #f4f6fa;
+                border: 1px solid #31445a;
+                border-radius: 6px;
+                padding: 6px 10px;
+            }
+            QDateTimeEdit::drop-down {
+                background-color: #2b3b4d;
+                border-left: 1px solid #31445a;
+                width: 24px;
+            }
+            QDateTimeEdit::down-arrow {
+                image: none;
+            }
+            """
+        )
+        calendar = self.ride_datetime_input.calendarWidget()
+        if calendar is not None:
+            calendar.setFirstDayOfWeek(Qt.DayOfWeek.Monday)
+            calendar.setStyleSheet(
+                """
+                QCalendarWidget {
+                    background-color: #0f1724;
+                    border: 1px solid #31445a;
+                    color: #f4f6fa;
+                }
+                QCalendarWidget QWidget#qt_calendar_navigationbar {
+                    background-color: #141f2e;
+                    border-bottom: 1px solid #31445a;
+                }
+                QCalendarWidget QToolButton {
+                    background-color: transparent;
+                    color: #f4f6fa;
+                    border: none;
+                    padding: 4px 8px;
+                }
+                QCalendarWidget QToolButton:hover {
+                    background-color: #1f2a36;
+                }
+                QCalendarWidget QSpinBox {
+                    background-color: #1f2a36;
+                    border: 1px solid #31445a;
+                    color: #f4f6fa;
+                }
+                QCalendarWidget QAbstractItemView:enabled {
+                    background-color: #101a2b;
+                    color: #f4f6fa;
+                    selection-background-color: #35c4c7;
+                    selection-color: #041226;
+                    gridline-color: #22324b;
+                }
+                QCalendarWidget QAbstractItemView:disabled {
+                    color: rgba(244, 246, 250, 0.25);
+                }
+                """
+            )
+
         self.driver_list = QListWidget()
         self.driver_list.setSelectionMode(QListWidget.SelectionMode.MultiSelection)
         self.driver_list.setMaximumWidth(260)
@@ -1877,6 +1953,12 @@ class RideSetupTab(QWidget):
         dest_hint.setWordWrap(True)
         dest_hint.setProperty("role", "hint")
         address_grid.addWidget(dest_hint, 2, 1)
+
+        ride_time_label = QLabel("Ride date & time")
+        ride_time_label.setProperty("role", "sectionLabel")
+        address_grid.addWidget(ride_time_label, 3, 0)
+
+        address_grid.addWidget(self.ride_datetime_input, 4, 0)
 
         address_grid.setColumnStretch(0, 1)
         address_grid.setColumnStretch(1, 1)
@@ -2109,6 +2191,7 @@ class RideSetupTab(QWidget):
             self.dest_input: self.address_section,
             self.start_history_combo: self.address_section,
             self.dest_history_combo: self.address_section,
+            self.ride_datetime_input: self.address_section,
             self.driver_list: self.team_section,
             self.passenger_list: self.team_section,
             self.flat_fee_input: self.fees_section,
@@ -2288,11 +2371,12 @@ class RideSetupTab(QWidget):
         driver_ids = {
             int(item.data(Qt.ItemDataRole.UserRole)) for item in self.driver_list.selectedItems()
         }
-        if not driver_ids:
-            return
         for index in range(self.passenger_list.count()):
             item = self.passenger_list.item(index)
-            if int(item.data(Qt.ItemDataRole.UserRole)) in driver_ids:
+            member_id = int(item.data(Qt.ItemDataRole.UserRole))
+            is_driver = member_id in driver_ids
+            item.setHidden(is_driver)
+            if is_driver and item.isSelected():
                 item.setSelected(False)
 
     def _on_driver_selection_changed(self) -> None:
@@ -2320,6 +2404,18 @@ class RideSetupTab(QWidget):
         else:
             self._clear_invalid(self.dest_input)
             state["destination_address"] = destination_address
+
+        ride_datetime_qt = self.ride_datetime_input.dateTime()
+        if not ride_datetime_qt.isValid():
+            message = "Choose a valid ride date and time."
+            errors.append(message)
+            self._mark_invalid(self.ride_datetime_input, message)
+        else:
+            self._clear_invalid(self.ride_datetime_input)
+            ride_datetime = datetime.fromtimestamp(
+                ride_datetime_qt.toSecsSinceEpoch(), tz=timezone.utc
+            )
+            state["ride_datetime"] = ride_datetime
 
         driver_ids = self._selected_driver_ids()
         if not driver_ids:
@@ -2575,6 +2671,7 @@ class RideSetupTab(QWidget):
                 fee_per_km=form_state["per_km_fee"],
                 total_cost=total_cost,
                 cost_per_passenger=cost_per_passenger,
+                ride_datetime=form_state["ride_datetime"],
             )
         except sqlite3.DatabaseError as exc:
             detail = f"Failed to save the ride: {exc}"
@@ -2600,6 +2697,7 @@ class RideSetupTab(QWidget):
         else:
             self.start_input.clear()
         self.dest_input.clear()
+        self.ride_datetime_input.setDateTime(QDateTime.currentDateTime())
         self.driver_list.clearSelection()
         self.passenger_list.clearSelection()
         self.start_history_combo.setCurrentIndex(0)

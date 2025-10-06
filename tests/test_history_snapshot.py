@@ -1,6 +1,8 @@
-import pytest
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Tuple
+
+import pytest
 
 from PyQt6.QtWidgets import QApplication
 
@@ -44,6 +46,7 @@ def test_snapshot_metrics_reflect_live_ledger_state(
         fee_per_km=0.45,
         total_cost=36.0,
         cost_per_passenger=18.0,
+        ride_datetime=datetime(2025, 7, 15, 17, 45, tzinfo=timezone.utc),
     )
 
     db_manager.record_ride(
@@ -57,6 +60,7 @@ def test_snapshot_metrics_reflect_live_ledger_state(
         fee_per_km=0.55,
         total_cost=24.0,
         cost_per_passenger=24.0,
+        ride_datetime=datetime(2025, 9, 2, 8, 15, tzinfo=timezone.utc),
     )
 
     tab = RideHistoryTab(db_manager)

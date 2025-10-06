@@ -1,0 +1,45 @@
+[ ] High — Launch upcoming ride planner & RSVP workflow so captains can coordinate future trips, capture availability, and convert them into recorded rides when complete.
+    - Extend `DatabaseManager` with `scheduled_rides` + `ride_invitees` tables (status, reminder timestamps) and lightweight migrations mirroring the existing schema bootstrapping.
+    - Build a dedicated `RidePlannerTab` (PyQt6) with timeline view, driver/passenger slot management, and quick actions to duplicate recent rides; reuse current QSS and `CollapsibleSection` patterns for consistency.
+    - Wire planner entries to the existing `record_ride` path so marking a ride as "completed" auto-populates the ledger, preserving cost calculation logic.
+    - Surface reminder hooks using `QSystemTrayIcon` notifications and optional desktop alerts via `notify-py` to boost RSVP responsiveness.
+
+[ ] High — Provide calendar export & sync for scheduled rides so the team’s calendars stay aligned.
+    - Generate iCalendar (.ics) files for individual rides and recurring series using the `ics` library or `icalendar`; attach downloads from the planner tab.
+    - Offer OAuth-backed Google Calendar sync (read/write) through `google-api-python-client`, with tokens stored in `%APPDATA%/TableTennisRideShare` alongside settings.
+    - Add per-ride toggles for pushing updates to linked calendars and display sync status in a planner-side activity log.
+
+[ ] High — Generate optimal settlement recommendations that minimise bank transfers when settling balances.
+    - Compute minimal cash-flow settlements using a network-flow or matching algorithm (e.g., via `networkx.algorithms.flow` or custom greedy heuristic).
+    - Create a "Settle Up" drawer within the ledger tab listing suggested transfers, amounts, and explanatory rationale.
+    - Allow exporting settlement plans as PDF/CSV leveraging the existing `export_ledger_pdf` utilities.
+
+[ ] Medium — Automate weekly ride & ledger digest emails (PDF attached) so coordinators can nudge stragglers without manual effort.
+    - Schedule background jobs with `APScheduler` (or a `QTimer` + thread pool fallback) to compile summaries every Sunday evening.
+    - Render stats via existing analytics helpers and attach the generated PDF ledger; deliver via SMTP (`smtplib`) or an API like SendGrid depending on configuration.
+    - Add settings UI for mail server credentials, digest cadence, and recipient lists stored in `settings.json`.
+
+[ ] Medium — Push ride updates to Slack or Microsoft Teams channels for asynchronous coordination.
+    - Support webhook-based notifications using `slack_sdk` or `pymsteams`, triggered on new planner entries, RSVPs, and ride completions.
+    - Provide per-channel templates with key details (drivers, passengers, distances, settlement deltas) and a deep-link back to the desktop app.
+    - Include rate limiting and retry logic similar to the Google Maps handler to keep notifications reliable.
+
+[ ] Medium — Expand analytics with fairness scorecards so captains can spot overused drivers and undercontributing passengers at a glance.
+    - Add cumulative driver mileage vs. passenger contributions charts (PyQtGraph) and percentile rankings per member.
+    - Compute season-to-date participation metrics via new `DatabaseManager` query helpers, optionally leveraging `pandas` for aggregations.
+    - Integrate colour-coded badges and trend annotations within the analytics tab to highlight imbalances requiring attention.
+
+[ ] Medium — Provide CSV import/export pipelines to reduce manual roster and history maintenance.
+    - Implement `CSV`/`pandas` loaders that validate structure before writing into SQLite, with rollback on failures.
+    - Offer bulk export buttons for team members, rides, and ledger entries (respecting GDPR via anonymisation toggles).
+    - Surface an audit log in the activity center capturing who imported what and when.
+
+[ ] Low — Add per-user customisation presets (themes, fee bundles, saved locations) to personalise the workflow.
+    - Store presets in `settings.json`, scoped by user profile, and expose quick-select chips across tabs.
+    - Allow importing/exporting theme packs so travelling teams can share preferred palettes.
+    - Ensure accessibility contrasts meet WCAG AA by validating theme choices during creation.
+
+[x] Foundation — Google Maps distance lookup with resilient caching is already implemented via `GoogleMapsHandler` and SQLite `route_cache`.
+[x] Foundation — Professional ledger PDF exports ship today through `src/utils/pdf_exporter.py` using ReportLab.
+[x] Foundation — Analytics dashboards (cost trends + ride frequency heatmap) exist in `AnalyticsTab` with PyQtGraph styling.
+[x] Foundation — First-run onboarding wizard (`utils/onboarding.py`) captures API keys, default tariffs, and roster seeds before the main window loads.
