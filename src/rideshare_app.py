@@ -3210,6 +3210,9 @@ class AnalyticsTab(QWidget):
         trend_layout.addLayout(controls_row)
 
         self.cost_plot = pg.PlotWidget()
+        self.cost_plot.setBackground(self._view_background)
+        self.cost_plot.setFrameShape(QFrame.Shape.NoFrame)
+        self.cost_plot.setStyleSheet("border: 1px solid #1d2736;")
         self.cost_plot.setLabel("left", "Passenger spend (€)")
         self.cost_plot.setLabel("bottom", "Month")
         self.cost_plot.setMenuEnabled(False)
@@ -3227,6 +3230,9 @@ class AnalyticsTab(QWidget):
         self.cost_stack = QStackedLayout()
         self.cost_stack.addWidget(self.cost_plot)
         placeholder_container = QWidget()
+        placeholder_container.setStyleSheet(
+            "background-color: #101a2b; border: 1px dashed rgba(61, 85, 110, 0.35);"
+        )
         placeholder_layout = QVBoxLayout(placeholder_container)
         placeholder_layout.setContentsMargins(0, 0, 0, 0)
         placeholder_layout.addStretch(1)
@@ -3256,6 +3262,9 @@ class AnalyticsTab(QWidget):
         heat_layout.setSpacing(12)
 
         self.heatmap_plot = pg.PlotWidget()
+        self.heatmap_plot.setBackground(self._view_background)
+        self.heatmap_plot.setFrameShape(QFrame.Shape.NoFrame)
+        self.heatmap_plot.setStyleSheet("border: 1px solid #1d2736;")
         self.heatmap_plot.setMenuEnabled(False)
         self.heatmap_plot.setMouseEnabled(x=False, y=False)
         self.heatmap_plot.hideButtons()
@@ -3277,6 +3286,9 @@ class AnalyticsTab(QWidget):
         self.heatmap_stack = QStackedLayout()
         self.heatmap_stack.addWidget(self.heatmap_plot)
         heat_placeholder_container = QWidget()
+        heat_placeholder_container.setStyleSheet(
+            "background-color: #101a2b; border: 1px dashed rgba(61, 85, 110, 0.35);"
+        )
         heat_placeholder_layout = QVBoxLayout(heat_placeholder_container)
         heat_placeholder_layout.setContentsMargins(0, 0, 0, 0)
         heat_placeholder_layout.addStretch(1)
