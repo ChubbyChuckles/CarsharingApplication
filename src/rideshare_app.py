@@ -50,6 +50,7 @@ from PyQt6.QtCore import (
     QPoint,
     QRegularExpression,
     QRectF,
+    QTime,
 )
 from PyQt6.QtGui import (
     QColor,
@@ -93,6 +94,9 @@ from PyQt6.QtWidgets import (
     QToolButton,
     QVBoxLayout,
     QWidget,
+    QSlider,
+    QDial,
+    QGraphicsDropShadowEffect,
 )
 
 from .utils.onboarding import OnboardingAborted, maybe_run_onboarding
@@ -1769,6 +1773,341 @@ class TeamManagementTab(QWidget):
         _refresh_widget_style(widget)
 
 
+class AuroraTimeSelector(QWidget):
+    """Immersive control surface for selecting ride times with ambient feedback."""
+
+    timeChanged = pyqtSignal(QDateTime)
+
+    def __init__(self, datetime_input: QDateTimeEdit, parent: QWidget | None = None) -> None:
+        if datetime_input is None:
+            raise ValueError("AuroraTimeSelector requires a QDateTimeEdit instance")
+
+        super().__init__(parent)
+        self._dt_edit = datetime_input
+        self._dt_edit.setParent(self)
+        self._dt_edit.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._dt_edit.setMinimumHeight(44)
+        font = self._dt_edit.font()
+        font.setPointSize(max(font.pointSize() + 1, 12))
+        self._dt_edit.setFont(font)
+
+        self._syncing = False
+
+        self.setObjectName("AuroraTimeSelector")
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setMinimumHeight(240)
+
+        self._phase_palette: dict[str, dict[str, str]] = {
+            "midnight": {
+                "title": "Late-night calm",
+                "gradient": "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #0b1120, stop:0.55 #101c30, stop:1 #18263c)",
+                "accent": "#818cf8",
+            },
+            "dawn": {
+                "title": "Dawn glow",
+                "gradient": "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #0f1b2f, stop:0.5 #1d2c3f, stop:1 #2a3d4f)",
+                "accent": "#fbbf24",
+            },
+            "day": {
+                "title": "Blue sky clarity",
+                "gradient": "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #0f2738, stop:0.52 #12384e, stop:1 #155065)",
+                "accent": "#35c4c7",
+            },
+            "dusk": {
+                "title": "Golden ember",
+                "gradient": "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #141a2c, stop:0.5 #23243c, stop:1 #352339)",
+                "accent": "#f97316",
+            },
+            "nightfall": {
+                "title": "Starlit hush",
+                "gradient": "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #0b1526, stop:0.5 #15223b, stop:1 #1d2f4a)",
+                "accent": "#60a5fa",
+            },
+        }
+
+        self._slider_template = """
+        QSlider::groove:horizontal {{
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            height: 12px;
+            border-radius: 6px;
+            background: {gradient};
+        }}
+        QSlider::sub-page:horizontal {{
+            background: {accent_glow};
+            border-radius: 6px;
+        }}
+        QSlider::add-page:horizontal {{
+            background: rgba(12, 21, 35, 0.85);
+            border-radius: 6px;
+        }}
+        QSlider::handle:horizontal {{
+            background-color: {accent};
+            border: 2px solid {accent_border};
+            width: 22px;
+            margin: -6px 0;
+            border-radius: 11px;
+        }}
+        QSlider::handle:horizontal:hover {{
+            background-color: {accent_hover};
+        }}
+        """
+
+        self._dial_template = """
+        QDial {{
+            background: qradialgradient(
+                cx:0.5, cy:0.5, fx:0.5, fy:0.5, radius:0.95,
+                stop:0 rgba(255, 255, 255, 0.05),
+                stop:0.6 {dial_fill},
+                stop:1 rgba(13, 23, 35, 0.90));
+            border: 2px solid rgba(255, 255, 255, 0.08);
+            padding: 6px;
+        }}
+        QDial::handle {{
+            background: {accent};
+            border: 2px solid rgba(15, 23, 42, 0.65);
+            width: 18px;
+            height: 18px;
+            margin: -9px;
+            border-radius: 9px;
+        }}
+        QDial::handle:hover {{
+            background: {accent_hover};
+        }}
+        QDial::chunk {{
+            background: {accent};
+            width: 4px;
+        }}
+        """
+
+        outer_layout = QVBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
+
+        self._card = QFrame(self)
+        self._card.setObjectName("rideTimeCard")
+        self._card.setFrameShape(QFrame.Shape.NoFrame)
+
+        shadow = QGraphicsDropShadowEffect(self)
+        shadow.setBlurRadius(44)
+        shadow.setOffset(0, 18)
+        shadow.setColor(QColor(18, 30, 46, 180))
+        self._card.setGraphicsEffect(shadow)
+
+        card_layout = QVBoxLayout(self._card)
+        card_layout.setContentsMargins(26, 22, 26, 24)
+        card_layout.setSpacing(18)
+
+        header_layout = QHBoxLayout()
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(12)
+
+        self._time_label = QLabel()
+        self._time_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        time_font = self._time_label.font()
+        time_font.setPointSize(max(time_font.pointSize() + 10, 24))
+        time_font.setWeight(QFont.Weight.DemiBold)
+        self._time_label.setFont(time_font)
+        self._time_label.setStyleSheet("color: #f8fafc;")
+        header_layout.addWidget(self._time_label, 1)
+
+        self._date_chip = QLabel()
+        self._date_chip.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._date_chip.setMinimumWidth(140)
+        chip_font = self._date_chip.font()
+        chip_font.setPointSize(max(chip_font.pointSize() - 1, 10))
+        self._date_chip.setFont(chip_font)
+        self._date_chip.setStyleSheet(
+            "padding: 6px 14px; border-radius: 12px; border: 1px solid rgba(255, 255, 255, 0.15);"
+            "color: #e2e8f0; background: rgba(15, 23, 42, 0.55);"
+        )
+        header_layout.addWidget(self._date_chip, 0, Qt.AlignmentFlag.AlignRight)
+
+        card_layout.addLayout(header_layout)
+
+        self._phase_label = QLabel()
+        phase_font = self._phase_label.font()
+        phase_font.setPointSize(max(phase_font.pointSize() + 2, 12))
+        self._phase_label.setFont(phase_font)
+        self._phase_label.setStyleSheet("color: rgba(241, 245, 249, 0.85);")
+        card_layout.addWidget(self._phase_label)
+
+        controls_row = QHBoxLayout()
+        controls_row.setContentsMargins(0, 0, 0, 0)
+        controls_row.setSpacing(20)
+
+        self.hour_slider = QSlider(Qt.Orientation.Horizontal)
+        self.hour_slider.setRange(0, 23)
+        self.hour_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.hour_slider.setTickInterval(1)
+        self.hour_slider.setCursor(Qt.CursorShape.PointingHandCursor)
+        controls_row.addWidget(self.hour_slider, 4)
+
+        dial_column = QVBoxLayout()
+        dial_column.setContentsMargins(0, 0, 0, 0)
+        dial_column.setSpacing(6)
+
+        self.minute_dial = QDial()
+        self.minute_dial.setRange(0, 59)
+        self.minute_dial.setWrapping(True)
+        self.minute_dial.setNotchesVisible(True)
+        self.minute_dial.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.minute_dial.setFixedSize(108, 108)
+        dial_column.addWidget(self.minute_dial, 0, Qt.AlignmentFlag.AlignHCenter)
+
+        dial_label = QLabel("Minute wheel")
+        dial_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        dial_label.setStyleSheet("color: rgba(241, 245, 249, 0.75);")
+        dial_column.addWidget(dial_label)
+
+        controls_row.addLayout(dial_column, 1)
+
+        card_layout.addLayout(controls_row)
+
+        self._spectrum_bar = QFrame()
+        self._spectrum_bar.setObjectName("spectrumBar")
+        self._spectrum_bar.setFixedHeight(6)
+        card_layout.addWidget(self._spectrum_bar)
+
+        self._edit_wrap = QFrame()
+        self._edit_wrap.setObjectName("dateTimeWrap")
+        wrap_layout = QHBoxLayout(self._edit_wrap)
+        wrap_layout.setContentsMargins(12, 10, 12, 10)
+        wrap_layout.setSpacing(0)
+        wrap_layout.addWidget(self._dt_edit)
+        card_layout.addWidget(self._edit_wrap)
+
+        outer_layout.addWidget(self._card)
+
+        current_dt = self._dt_edit.dateTime()
+        self.hour_slider.setValue(current_dt.time().hour())
+        self.minute_dial.setValue(current_dt.time().minute())
+
+        self.hour_slider.valueChanged.connect(self._on_controls_changed)
+        self.minute_dial.valueChanged.connect(self._on_controls_changed)
+        self._dt_edit.dateTimeChanged.connect(self._sync_from_edit)
+
+        self._update_time_display(current_dt)
+
+    @staticmethod
+    def _rgba(hex_color: str, alpha: float) -> str:
+        hex_value = hex_color.lstrip("#")
+        if len(hex_value) != 6:
+            hex_value = "0" * (6 - len(hex_value)) + hex_value
+        r = int(hex_value[0:2], 16)
+        g = int(hex_value[2:4], 16)
+        b = int(hex_value[4:6], 16)
+        return f"rgba({r}, {g}, {b}, {alpha})"
+
+    def _phase_for_hour(self, hour: int) -> str:
+        if 4 <= hour < 8:
+            return "dawn"
+        if 8 <= hour < 17:
+            return "day"
+        if 17 <= hour < 20:
+            return "dusk"
+        if 20 <= hour < 23:
+            return "nightfall"
+        return "midnight"
+
+    def _apply_palette(self, phase_key: str) -> None:
+        palette = self._phase_palette.get(phase_key, self._phase_palette["day"])
+        gradient = palette["gradient"]
+        accent = palette["accent"]
+        accent_glow = self._rgba(accent, 0.32)
+        accent_border = self._rgba(accent, 0.55)
+        accent_hover = self._rgba(accent, 0.78)
+        dial_fill = self._rgba(accent, 0.18)
+
+        self._card.setStyleSheet(
+            f"""
+            QFrame#rideTimeCard {{
+                border-radius: 22px;
+                border: 1px solid rgba(255, 255, 255, 0.07);
+                background: {gradient};
+            }}
+            """
+        )
+
+        self._spectrum_bar.setStyleSheet(
+            f"""
+            QFrame#spectrumBar {{
+                border-radius: 3px;
+                background: {gradient};
+            }}
+            """
+        )
+
+        self._edit_wrap.setStyleSheet(
+            f"""
+            QFrame#dateTimeWrap {{
+                border-radius: 14px;
+                border: 1px solid {accent_border};
+                background: rgba(15, 23, 42, 0.70);
+            }}
+            """
+        )
+
+        self.hour_slider.setStyleSheet(
+            self._slider_template.format(
+                gradient=gradient,
+                accent=accent,
+                accent_glow=accent_glow,
+                accent_border=accent_border,
+                accent_hover=accent_hover,
+            )
+        )
+        self.minute_dial.setStyleSheet(
+            self._dial_template.format(
+                accent=accent,
+                accent_hover=accent_hover,
+                dial_fill=dial_fill,
+            )
+        )
+        self._phase_label.setStyleSheet(f"color: {self._rgba(accent, 0.75)};")
+        self._date_chip.setStyleSheet(
+            "padding: 6px 14px; border-radius: 12px; "
+            f"border: 1px solid {accent_border}; "
+            "color: #e5ecf6; "
+            "background: rgba(11, 18, 32, 0.78);"
+        )
+
+    def _update_time_display(self, dt: QDateTime) -> None:
+        local_dt = dt.toLocalTime()
+        hour = local_dt.time().hour()
+        phase_key = self._phase_for_hour(hour)
+        palette = self._phase_palette.get(phase_key, self._phase_palette["day"])
+        self._time_label.setText(local_dt.toString("HH:mm"))
+        self._phase_label.setText(palette["title"])
+        self._date_chip.setText(local_dt.toString("ddd · MMM d"))
+        self._apply_palette(phase_key)
+        self._dt_edit.setProperty("phaseAccent", palette["accent"])
+        _refresh_widget_style(self._dt_edit)
+
+    def _on_controls_changed(self) -> None:
+        if self._syncing:
+            return
+        self._syncing = True
+        current_dt = self._dt_edit.dateTime()
+        new_dt = QDateTime(current_dt)
+        new_dt.setTime(QTime(self.hour_slider.value(), self.minute_dial.value()))
+        self._dt_edit.setDateTime(new_dt)
+        self._update_time_display(new_dt)
+        self._syncing = False
+        self.timeChanged.emit(new_dt)
+
+    def _sync_from_edit(self, dt: QDateTime) -> None:
+        if self._syncing:
+            return
+        self.hour_slider.blockSignals(True)
+        self.minute_dial.blockSignals(True)
+        self.hour_slider.setValue(dt.time().hour())
+        self.minute_dial.setValue(dt.time().minute())
+        self.hour_slider.blockSignals(False)
+        self.minute_dial.blockSignals(False)
+        self._update_time_display(dt)
+        self.timeChanged.emit(dt)
+
+
 class RideSetupTab(QWidget):
     """Configure and persist new rides, including cost calculations."""
 
@@ -1883,21 +2222,7 @@ class RideSetupTab(QWidget):
                 """
             )
 
-        self.ride_time_decrement = QToolButton()
-        self.ride_time_decrement.setText("-15 min")
-        self.ride_time_decrement.setToolTip("Subtract 15 minutes from the ride time")
-        self.ride_time_decrement.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.ride_time_decrement.setAutoRepeat(True)
-        self.ride_time_decrement.setAutoRepeatInterval(220)
-        self.ride_time_decrement.setAutoRepeatDelay(260)
-
-        self.ride_time_increment = QToolButton()
-        self.ride_time_increment.setText("+15 min")
-        self.ride_time_increment.setToolTip("Add 15 minutes to the ride time")
-        self.ride_time_increment.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.ride_time_increment.setAutoRepeat(True)
-        self.ride_time_increment.setAutoRepeatInterval(220)
-        self.ride_time_increment.setAutoRepeatDelay(260)
+        self.ride_time_selector = AuroraTimeSelector(self.ride_datetime_input)
 
         self.driver_list = QListWidget()
         self.driver_list.setSelectionMode(QListWidget.SelectionMode.MultiSelection)
@@ -2026,16 +2351,9 @@ class RideSetupTab(QWidget):
 
         ride_time_label = QLabel("Ride date & time")
         ride_time_label.setProperty("role", "sectionLabel")
-        address_grid.addWidget(ride_time_label, 3, 0)
+        address_grid.addWidget(ride_time_label, 3, 0, 1, 2)
 
-        ride_time_row = QWidget()
-        ride_time_layout = QHBoxLayout(ride_time_row)
-        ride_time_layout.setContentsMargins(0, 0, 0, 0)
-        ride_time_layout.setSpacing(8)
-        ride_time_layout.addWidget(self.ride_datetime_input, 1)
-        ride_time_layout.addWidget(self.ride_time_decrement)
-        ride_time_layout.addWidget(self.ride_time_increment)
-        address_grid.addWidget(ride_time_row, 4, 0)
+        address_grid.addWidget(self.ride_time_selector, 4, 0, 1, 2)
 
         address_grid.setColumnStretch(0, 1)
         address_grid.setColumnStretch(1, 1)
@@ -2252,8 +2570,6 @@ class RideSetupTab(QWidget):
         self.start_history_combo.currentIndexChanged.connect(self._on_start_history_selected)
         self.dest_history_combo.currentIndexChanged.connect(self._on_dest_history_selected)
         self.ride_datetime_input.dateTimeChanged.connect(self._invalidate_calculation)
-        self.ride_time_decrement.clicked.connect(lambda: self._adjust_ride_time(-15))
-        self.ride_time_increment.clicked.connect(lambda: self._adjust_ride_time(15))
 
     def _setup_live_validation(self) -> None:
         self.start_input.textChanged.connect(lambda: self._on_address_changed(self.start_input))
@@ -2462,12 +2778,6 @@ class RideSetupTab(QWidget):
         return [
             int(item.data(Qt.ItemDataRole.UserRole)) for item in self.passenger_list.selectedItems()
         ]
-
-    def _adjust_ride_time(self, minutes: int) -> None:
-        current = self.ride_datetime_input.dateTime()
-        if not current.isValid():
-            return
-        self.ride_datetime_input.setDateTime(current.addSecs(minutes * 60))
 
     def _format_member(self, member: TeamMember) -> str:
         role = "Core" if member.is_core else "Reserve"
