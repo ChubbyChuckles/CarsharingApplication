@@ -1,7 +1,8 @@
 import pytest
+from datetime import datetime
 from pathlib import Path
 from typing import List
-from PyQt6.QtCore import QThreadPool, Qt
+from PyQt6.QtCore import QDateTime, QThreadPool, Qt
 from PyQt6.QtWidgets import QApplication
 
 from src.rideshare_app import (
@@ -83,10 +84,16 @@ def test_ride_setup_validation_collects_errors_and_success(
     tab.dest_input.setText("Destination Avenue")
     tab.driver_list.item(0).setSelected(True)
     tab.passenger_list.item(1).setSelected(True)
+    target_dt = QDateTime.fromString("2025-01-02T12:45", Qt.DateFormat.ISODate)
+    tab.ride_datetime_input.setDateTime(target_dt)
 
     form_state, errors = tab._collect_form_state()
     assert not errors
     assert form_state is not None
+    assert form_state["ride_datetime"].tzinfo is not None
+    assert form_state["ride_datetime"].hour == 12
+    local_offset = datetime.now().astimezone().utcoffset()
+    assert form_state["ride_datetime"].utcoffset() == local_offset
 
     tab._on_distance_ready(
         DistanceLookupResult(distance_km=5.0, from_cache=False, attempts=1),

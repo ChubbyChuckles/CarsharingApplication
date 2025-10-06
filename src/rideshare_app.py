@@ -1817,6 +1817,7 @@ class RideSetupTab(QWidget):
         self.ride_datetime_input = QDateTimeEdit()
         self.ride_datetime_input.setCalendarPopup(True)
         self.ride_datetime_input.setDisplayFormat("yyyy-MM-dd HH:mm")
+        self.ride_datetime_input.setTimeSpec(Qt.TimeSpec.LocalTime)
         self.ride_datetime_input.setDateTime(QDateTime.currentDateTime())
         self.ride_datetime_input.setMinimumWidth(0)
         self.ride_datetime_input.setSizePolicy(
@@ -1881,6 +1882,22 @@ class RideSetupTab(QWidget):
                 }
                 """
             )
+
+        self.ride_time_decrement = QToolButton()
+        self.ride_time_decrement.setText("-15 min")
+        self.ride_time_decrement.setToolTip("Subtract 15 minutes from the ride time")
+        self.ride_time_decrement.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.ride_time_decrement.setAutoRepeat(True)
+        self.ride_time_decrement.setAutoRepeatInterval(220)
+        self.ride_time_decrement.setAutoRepeatDelay(260)
+
+        self.ride_time_increment = QToolButton()
+        self.ride_time_increment.setText("+15 min")
+        self.ride_time_increment.setToolTip("Add 15 minutes to the ride time")
+        self.ride_time_increment.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.ride_time_increment.setAutoRepeat(True)
+        self.ride_time_increment.setAutoRepeatInterval(220)
+        self.ride_time_increment.setAutoRepeatDelay(260)
 
         self.driver_list = QListWidget()
         self.driver_list.setSelectionMode(QListWidget.SelectionMode.MultiSelection)
@@ -2011,7 +2028,14 @@ class RideSetupTab(QWidget):
         ride_time_label.setProperty("role", "sectionLabel")
         address_grid.addWidget(ride_time_label, 3, 0)
 
-        address_grid.addWidget(self.ride_datetime_input, 4, 0)
+        ride_time_row = QWidget()
+        ride_time_layout = QHBoxLayout(ride_time_row)
+        ride_time_layout.setContentsMargins(0, 0, 0, 0)
+        ride_time_layout.setSpacing(8)
+        ride_time_layout.addWidget(self.ride_datetime_input, 1)
+        ride_time_layout.addWidget(self.ride_time_decrement)
+        ride_time_layout.addWidget(self.ride_time_increment)
+        address_grid.addWidget(ride_time_row, 4, 0)
 
         address_grid.setColumnStretch(0, 1)
         address_grid.setColumnStretch(1, 1)
@@ -2227,6 +2251,9 @@ class RideSetupTab(QWidget):
         self.dest_input.textChanged.connect(self._invalidate_calculation)
         self.start_history_combo.currentIndexChanged.connect(self._on_start_history_selected)
         self.dest_history_combo.currentIndexChanged.connect(self._on_dest_history_selected)
+        self.ride_datetime_input.dateTimeChanged.connect(self._invalidate_calculation)
+        self.ride_time_decrement.clicked.connect(lambda: self._adjust_ride_time(-15))
+        self.ride_time_increment.clicked.connect(lambda: self._adjust_ride_time(15))
 
     def _setup_live_validation(self) -> None:
         self.start_input.textChanged.connect(lambda: self._on_address_changed(self.start_input))
@@ -2237,6 +2264,7 @@ class RideSetupTab(QWidget):
         self.per_km_input.valueChanged.connect(lambda: self._on_numeric_changed(self.per_km_input))
         self.driver_list.itemSelectionChanged.connect(self._clear_banner_if_error)
         self.passenger_list.itemSelectionChanged.connect(self._clear_banner_if_error)
+        self.ride_datetime_input.dateTimeChanged.connect(self._on_datetime_changed)
 
     def _configure_focus_disclosure(self) -> None:
         self._section_focus_map: dict[QWidget, CollapsibleSection] = {
@@ -2435,6 +2463,12 @@ class RideSetupTab(QWidget):
             int(item.data(Qt.ItemDataRole.UserRole)) for item in self.passenger_list.selectedItems()
         ]
 
+    def _adjust_ride_time(self, minutes: int) -> None:
+        current = self.ride_datetime_input.dateTime()
+        if not current.isValid():
+            return
+        self.ride_datetime_input.setDateTime(current.addSecs(minutes * 60))
+
     def _format_member(self, member: TeamMember) -> str:
         role = "Core" if member.is_core else "Reserve"
         return f"{member.name} ({role})"
@@ -2538,9 +2572,15 @@ class RideSetupTab(QWidget):
             self._mark_invalid(self.ride_datetime_input, message)
         else:
             self._clear_invalid(self.ride_datetime_input)
-            ride_datetime = datetime.fromtimestamp(
-                ride_datetime_qt.toSecsSinceEpoch(), tz=timezone.utc
-            )
+            ride_datetime = ride_datetime_qt.toPyDateTime()
+            local_tz = datetime.now().astimezone().tzinfo
+            if ride_datetime.tzinfo is None:
+                if local_tz is not None:
+                    ride_datetime = ride_datetime.replace(tzinfo=local_tz)
+                else:
+                    ride_datetime = ride_datetime.replace(tzinfo=timezone.utc)
+            elif local_tz is not None:
+                ride_datetime = ride_datetime.astimezone(local_tz)
             state["ride_datetime"] = ride_datetime
 
         driver_ids = self._selected_driver_ids()
@@ -2621,6 +2661,11 @@ class RideSetupTab(QWidget):
     def _on_numeric_changed(self, widget: QDoubleSpinBox) -> None:
         if widget.value() > 0:
             self._clear_invalid(widget)
+            self._clear_banner_if_error()
+
+    def _on_datetime_changed(self, _value: QDateTime) -> None:
+        if self.ride_datetime_input.dateTime().isValid():
+            self._clear_invalid(self.ride_datetime_input)
             self._clear_banner_if_error()
 
     # Event handlers ------------------------------------------------------
@@ -3355,6 +3400,12 @@ class RideHistoryTab(QWidget):
             dt = datetime.fromisoformat(timestamp)
         except ValueError:
             return timestamp
+        if dt.tzinfo is not None:
+            dt = dt.astimezone()
+        else:
+            local_tz = datetime.now().astimezone().tzinfo
+            if local_tz is not None:
+                dt = dt.replace(tzinfo=local_tz)
         return dt.strftime("%Y-%m-%d %H:%M")
 
 
@@ -4023,9 +4074,7 @@ class RideShareApp(QMainWindow):
         self.title_bar.set_activity_panel_visible(self._notification_visible)
 
     def _on_ride_saved(self) -> None:
-        self.history_tab.refresh()
-        self.analytics_tab.refresh()
-        self._refresh_recent_addresses()
+        self.team_tab.refresh_members()
         self._log_activity(
             "info",
             "Background sync",
@@ -4033,8 +4082,7 @@ class RideShareApp(QMainWindow):
         )
 
     def _on_ride_deleted(self) -> None:
-        self.analytics_tab.refresh()
-        self._refresh_recent_addresses()
+        self.team_tab.refresh_members()
         self._log_activity(
             "info",
             "Background sync",
