@@ -5305,7 +5305,7 @@ class AnalyticsTab(QWidget):
             symbolPen=node_pens,
             texts=node_texts,
             textColor=QColor("#dee7ff"),
-            pen=edge_pens,
+            adjPen=edge_pens,
         )
 
         if pos_array.size:
