@@ -111,12 +111,40 @@ def test_analytics_tab_refresh_toggles_views(
 
     assert tab.cost_stack.currentIndex() == 1
     assert tab.heatmap_stack.currentIndex() == 1
+    assert tab.driver_stack.currentIndex() == 1
+    assert tab.distance_stack.currentIndex() == 1
+    assert tab.route_stack.currentIndex() == 1
 
     _seed_sample_data(db_manager)
     tab.refresh()
 
     assert tab.cost_stack.currentIndex() == 0
     assert tab.heatmap_stack.currentIndex() == 0
+    assert tab.driver_stack.currentIndex() == 0
+    assert tab.distance_stack.currentIndex() == 0
+    assert tab.route_stack.currentIndex() == 0
     assert tab._latest_frequency_total == 3  # type: ignore[attr-defined]
 
     tab.deleteLater()
+
+
+def test_fetch_driver_statistics(db_manager: DatabaseManager) -> None:
+    _seed_sample_data(db_manager)
+
+    stats = db_manager.fetch_driver_statistics()
+
+    lookup = {entry["name"]: entry for entry in stats}
+    assert lookup["Alice"]["drive_count"] == 2
+    assert lookup["Ben"]["drive_count"] == 1
+    assert pytest.approx(lookup["Alice"]["total_distance"], rel=1e-5) == 21.5
+
+
+def test_fetch_route_cost_summary(db_manager: DatabaseManager) -> None:
+    _seed_sample_data(db_manager)
+
+    routes = db_manager.fetch_route_cost_summary(limit=5)
+    labels = {(entry["start"], entry["destination"]) for entry in routes}
+    assert ("Clubhouse", "Tournament") in labels
+    assert ("Clubhouse", "Practice") in labels
+    first_entry = routes[0]
+    assert first_entry["ride_count"] >= 1

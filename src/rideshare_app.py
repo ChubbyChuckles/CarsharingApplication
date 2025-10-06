@@ -21,6 +21,7 @@ The application loads this variable on start-up. The key must have access to the
 from __future__ import annotations
 
 import json
+import math
 import os
 import shutil
 import sqlite3
@@ -851,6 +852,79 @@ class DatabaseManager:
             "hour_labels": hour_labels,
             "total_rides": total_rides,
         }
+
+    def fetch_driver_statistics(self) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    tm.id AS member_id,
+                    tm.name AS member_name,
+                    tm.is_core AS is_core,
+                    COUNT(rd.ride_id) AS drive_count,
+                    SUM(r.distance_km) AS total_distance,
+                    SUM(r.total_cost) AS total_cost
+                FROM ride_drivers rd
+                JOIN rides r ON r.id = rd.ride_id
+                JOIN team_members tm ON tm.id = rd.driver_id
+                GROUP BY rd.driver_id
+                ORDER BY drive_count DESC, tm.name COLLATE NOCASE
+                """
+            ).fetchall()
+
+        stats: list[dict[str, Any]] = []
+        for row in rows:
+            stats.append(
+                {
+                    "member_id": int(row["member_id"]),
+                    "name": str(row["member_name"]),
+                    "is_core": bool(row["is_core"]),
+                    "drive_count": int(row["drive_count"] or 0),
+                    "total_distance": round(float(row["total_distance"] or 0.0), 2),
+                    "total_cost": round(float(row["total_cost"] or 0.0), 2),
+                }
+            )
+        return stats
+
+    def fetch_ride_distances(self) -> list[float]:
+        with self._connect() as conn:
+            rows = conn.execute("SELECT distance_km FROM rides").fetchall()
+        return [float(row[0] or 0.0) for row in rows if row and row[0] is not None]
+
+    def fetch_route_cost_summary(self, limit: int = 6) -> list[dict[str, Any]]:
+        if limit <= 0:
+            limit = 6
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    r.start_address,
+                    r.destination_address,
+                    COUNT(*) AS ride_count,
+                    AVG(r.total_cost) AS avg_cost,
+                    AVG(r.distance_km) AS avg_distance,
+                    SUM(r.total_cost) AS total_cost
+                FROM rides r
+                GROUP BY r.start_address, r.destination_address
+                ORDER BY ride_count DESC, total_cost DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            results.append(
+                {
+                    "start": str(row["start_address"]),
+                    "destination": str(row["destination_address"]),
+                    "ride_count": int(row["ride_count"] or 0),
+                    "avg_cost": round(float(row["avg_cost"] or 0.0), 2),
+                    "avg_distance": round(float(row["avg_distance"] or 0.0), 2),
+                    "total_cost": round(float(row["total_cost"] or 0.0), 2),
+                }
+            )
+        return results
 
     def upsert_route_cache(self, origin: str, destination: str, distance_km: float) -> None:
         origin_key = origin.strip()
@@ -3836,6 +3910,122 @@ class AnalyticsTab(QWidget):
         self.trend_section.add_content_widget(trend_content)
         layout.addWidget(self.trend_section)
 
+        self.driver_section = CollapsibleSection(
+            "Driver rotation spotlight",
+            description="Compare how often teammates drive and the spend they generate.",
+            expanded=True,
+        )
+        driver_content = QWidget()
+        driver_layout = QVBoxLayout(driver_content)
+        driver_layout.setContentsMargins(0, 0, 0, 0)
+        driver_layout.setSpacing(12)
+
+        self.driver_plot = pg.PlotWidget()
+        self.driver_plot.setBackground(self._view_background)
+        self.driver_plot.setFrameShape(QFrame.Shape.NoFrame)
+        self.driver_plot.setStyleSheet("border: 1px solid #1d2736;")
+        self.driver_plot.setMenuEnabled(False)
+        self.driver_plot.setMinimumHeight(260)
+        self.driver_plot.setLabel("left", "Drives")
+        self.driver_plot.setLabel("bottom", "Member")
+        self.driver_plot.showGrid(x=False, y=True, alpha=0.15)
+        self._configure_driver_plot()
+
+        self.driver_placeholder = QLabel(
+            "Once drivers log rides, their rotation appears here as bars."
+        )
+        self.driver_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.driver_placeholder.setProperty("role", "hint")
+
+        self.driver_stack = QStackedLayout()
+        self.driver_stack.addWidget(self.driver_plot)
+        driver_placeholder_container = QWidget()
+        driver_placeholder_container.setStyleSheet(
+            "background-color: #101a2b; border: 1px dashed rgba(61, 85, 110, 0.35);"
+        )
+        driver_placeholder_layout = QVBoxLayout(driver_placeholder_container)
+        driver_placeholder_layout.setContentsMargins(0, 0, 0, 0)
+        driver_placeholder_layout.addStretch(1)
+        driver_placeholder_layout.addWidget(
+            self.driver_placeholder, 0, Qt.AlignmentFlag.AlignCenter
+        )
+        driver_placeholder_layout.addStretch(1)
+        self.driver_stack.addWidget(driver_placeholder_container)
+        driver_layout.addLayout(self.driver_stack)
+
+        self.driver_detail_label = QLabel()
+        self.driver_detail_label.setWordWrap(True)
+        self.driver_detail_label.setProperty("role", "hint")
+        self.driver_detail_label.setVisible(False)
+        driver_layout.addWidget(self.driver_detail_label)
+
+        driver_hint = QLabel(
+            "Totals reflect every driver assigned to a ride; core and reserve members are colour-coded."
+        )
+        driver_hint.setWordWrap(True)
+        driver_hint.setProperty("role", "hint")
+        driver_layout.addWidget(driver_hint)
+
+        self.driver_section.add_content_widget(driver_content)
+        layout.addWidget(self.driver_section)
+
+        self.distance_section = CollapsibleSection(
+            "Distance distribution",
+            description="Check whether most rides are quick trips or long hauls.",
+            expanded=False,
+        )
+        distance_content = QWidget()
+        distance_layout = QVBoxLayout(distance_content)
+        distance_layout.setContentsMargins(0, 0, 0, 0)
+        distance_layout.setSpacing(12)
+
+        self.distance_plot = pg.PlotWidget()
+        self.distance_plot.setBackground(self._view_background)
+        self.distance_plot.setFrameShape(QFrame.Shape.NoFrame)
+        self.distance_plot.setStyleSheet("border: 1px solid #1d2736;")
+        self.distance_plot.setMenuEnabled(False)
+        self.distance_plot.setMinimumHeight(260)
+        self.distance_plot.setLabel("left", "Ride count")
+        self.distance_plot.setLabel("bottom", "Round-trip distance (km)")
+        self.distance_plot.showGrid(x=False, y=True, alpha=0.15)
+        self._configure_distance_plot()
+
+        self.distance_placeholder = QLabel(
+            "Log rides to reveal how their distances are distributed."
+        )
+        self.distance_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.distance_placeholder.setProperty("role", "hint")
+
+        self.distance_stack = QStackedLayout()
+        self.distance_stack.addWidget(self.distance_plot)
+        distance_placeholder_container = QWidget()
+        distance_placeholder_container.setStyleSheet(
+            "background-color: #101a2b; border: 1px dashed rgba(61, 85, 110, 0.35);"
+        )
+        distance_placeholder_layout = QVBoxLayout(distance_placeholder_container)
+        distance_placeholder_layout.setContentsMargins(0, 0, 0, 0)
+        distance_placeholder_layout.addStretch(1)
+        distance_placeholder_layout.addWidget(
+            self.distance_placeholder, 0, Qt.AlignmentFlag.AlignCenter
+        )
+        distance_placeholder_layout.addStretch(1)
+        self.distance_stack.addWidget(distance_placeholder_container)
+        distance_layout.addLayout(self.distance_stack)
+
+        self.distance_detail_label = QLabel()
+        self.distance_detail_label.setWordWrap(True)
+        self.distance_detail_label.setProperty("role", "hint")
+        self.distance_detail_label.setVisible(False)
+        distance_layout.addWidget(self.distance_detail_label)
+
+        distance_hint = QLabel("Histogram bins adjust automatically to the amount of saved data.")
+        distance_hint.setWordWrap(True)
+        distance_hint.setProperty("role", "hint")
+        distance_layout.addWidget(distance_hint)
+
+        self.distance_section.add_content_widget(distance_content)
+        layout.addWidget(self.distance_section)
+
         self.heatmap_section = CollapsibleSection(
             "Ride frequency heatmap",
             description="Identify the weekdays and hours where rides occur most often.",
@@ -3894,6 +4084,61 @@ class AnalyticsTab(QWidget):
         self.heatmap_section.add_content_widget(heat_content)
         layout.addWidget(self.heatmap_section)
 
+        self.route_section = CollapsibleSection(
+            "Top routes by total spend",
+            description="Highlight which start/destination pairs accrue the highest costs.",
+            expanded=False,
+        )
+        route_content = QWidget()
+        route_layout = QVBoxLayout(route_content)
+        route_layout.setContentsMargins(0, 0, 0, 0)
+        route_layout.setSpacing(12)
+
+        self.route_plot = pg.PlotWidget()
+        self.route_plot.setBackground(self._view_background)
+        self.route_plot.setFrameShape(QFrame.Shape.NoFrame)
+        self.route_plot.setStyleSheet("border: 1px solid #1d2736;")
+        self.route_plot.setMenuEnabled(False)
+        self.route_plot.setMinimumHeight(260)
+        self.route_plot.setLabel("left", "Total spend (€)")
+        self.route_plot.setLabel("bottom", "Route")
+        self.route_plot.showGrid(x=False, y=True, alpha=0.12)
+        self._configure_route_plot()
+
+        self.route_placeholder = QLabel(
+            "When rides are saved, the biggest start→destination pairs show up here."
+        )
+        self.route_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.route_placeholder.setProperty("role", "hint")
+
+        self.route_stack = QStackedLayout()
+        self.route_stack.addWidget(self.route_plot)
+        route_placeholder_container = QWidget()
+        route_placeholder_container.setStyleSheet(
+            "background-color: #101a2b; border: 1px dashed rgba(61, 85, 110, 0.35);"
+        )
+        route_placeholder_layout = QVBoxLayout(route_placeholder_container)
+        route_placeholder_layout.setContentsMargins(0, 0, 0, 0)
+        route_placeholder_layout.addStretch(1)
+        route_placeholder_layout.addWidget(self.route_placeholder, 0, Qt.AlignmentFlag.AlignCenter)
+        route_placeholder_layout.addStretch(1)
+        self.route_stack.addWidget(route_placeholder_container)
+        route_layout.addLayout(self.route_stack)
+
+        self.route_detail_label = QLabel()
+        self.route_detail_label.setWordWrap(True)
+        self.route_detail_label.setProperty("role", "hint")
+        self.route_detail_label.setVisible(False)
+        route_layout.addWidget(self.route_detail_label)
+
+        route_hint = QLabel("Routes are grouped by exact origin and destination strings saved.")
+        route_hint.setWordWrap(True)
+        route_hint.setProperty("role", "hint")
+        route_layout.addWidget(route_hint)
+
+        self.route_section.add_content_widget(route_content)
+        layout.addWidget(self.route_section)
+
         layout.addStretch(1)
 
         self.period_combo.currentIndexChanged.connect(self.refresh)
@@ -3901,6 +4146,9 @@ class AnalyticsTab(QWidget):
 
         self.cost_stack.setCurrentIndex(1)
         self.heatmap_stack.setCurrentIndex(1)
+        self.driver_stack.setCurrentIndex(1)
+        self.distance_stack.setCurrentIndex(1)
+        self.route_stack.setCurrentIndex(1)
 
     def refresh(self) -> None:
         months = int(self.period_combo.currentData(Qt.ItemDataRole.UserRole) or 6)
@@ -3995,6 +4243,164 @@ class AnalyticsTab(QWidget):
                 "Once rides are logged, their distribution appears here as a heatmap."
             )
 
+        driver_stats = self.db_manager.fetch_driver_statistics()
+        self._configure_driver_plot()
+        if driver_stats:
+            self.driver_stack.setCurrentIndex(0)
+            indices = list(range(len(driver_stats)))
+            core_x: list[float] = []
+            core_heights: list[float] = []
+            reserve_x: list[float] = []
+            reserve_heights: list[float] = []
+            bottom_axis = self.driver_plot.getAxis("bottom")
+            ticks = []
+            total_drives = 0
+            for idx, stats in enumerate(driver_stats):
+                ticks.append((idx, stats["name"]))
+                total_drives += stats["drive_count"]
+                if stats["is_core"]:
+                    core_x.append(idx)
+                    core_heights.append(stats["drive_count"])
+                else:
+                    reserve_x.append(idx)
+                    reserve_heights.append(stats["drive_count"])
+
+            if core_x:
+                core_bar = pg.BarGraphItem(
+                    x=core_x,
+                    height=core_heights,
+                    width=0.55,
+                    brush=pg.mkBrush(QColor("#35c4c7")),
+                    pen=pg.mkPen(QColor("#162338"), width=1),
+                )
+                self.driver_plot.addItem(core_bar)
+            if reserve_x:
+                reserve_bar = pg.BarGraphItem(
+                    x=reserve_x,
+                    height=reserve_heights,
+                    width=0.55,
+                    brush=pg.mkBrush(QColor("#ffd27d")),
+                    pen=pg.mkPen(QColor("#3a2f18"), width=1),
+                )
+                self.driver_plot.addItem(reserve_bar)
+
+            bottom_axis.setTicks([ticks])
+            self.driver_plot.setXRange(-0.6, len(driver_stats) - 0.4, padding=0.02)
+            max_height = max(stats["drive_count"] for stats in driver_stats) if driver_stats else 0
+            self.driver_plot.setYRange(0, max(1.0, max_height * 1.25), padding=0.02)
+            top_driver = driver_stats[0]
+            avg_distance = sum(s["total_distance"] for s in driver_stats) / max(
+                1, len(driver_stats)
+            )
+            self.driver_detail_label.setVisible(True)
+            self.driver_detail_label.setText(
+                (
+                    f"Top driver: {top_driver['name']} with {top_driver['drive_count']} drive"
+                    f"{'s' if top_driver['drive_count'] != 1 else ''} covering {top_driver['total_distance']:.1f} km. "
+                    f"Average distance per driver across the roster sits at {avg_distance:.1f} km."
+                )
+            )
+            messages.append(
+                f"driver rotation for {len(driver_stats)} driver{'s' if len(driver_stats) != 1 else ''}"
+            )
+        else:
+            self.driver_stack.setCurrentIndex(1)
+            self.driver_detail_label.setVisible(False)
+            self.driver_detail_label.clear()
+            self.driver_placeholder.setText(
+                "Once drivers log rides, their rotation appears here as bars."
+            )
+
+        distances = self.db_manager.fetch_ride_distances()
+        self._configure_distance_plot()
+        if distances:
+            self.distance_stack.setCurrentIndex(0)
+            max_distance = max(distances)
+            if max_distance <= 0:
+                max_distance = 1.0
+            bin_count = int(math.ceil(math.sqrt(len(distances))))
+            bin_count = max(4, min(bin_count, 18))
+            counts, edges = np.histogram(distances, bins=bin_count, range=(0, max_distance))
+            widths = np.diff(edges)
+            centers = edges[:-1] + widths / 2
+            histogram = pg.BarGraphItem(
+                x=centers,
+                height=counts,
+                width=widths * 0.9,
+                brush=pg.mkBrush(QColor("#4f70ff")),
+                pen=pg.mkPen(QColor("#1a2440"), width=1),
+            )
+            self.distance_plot.addItem(histogram)
+            bottom_axis = self.distance_plot.getAxis("bottom")
+            tick_labels = []
+            for center in centers:
+                tick_labels.append((center, f"{center:.0f}"))
+            bottom_axis.setTicks([tick_labels])
+            self.distance_plot.setXRange(0, max_distance, padding=0.04)
+            self.distance_plot.setYRange(0, max(1.0, max(counts) * 1.25), padding=0.02)
+            mean_distance = float(np.mean(distances)) if distances else 0.0
+            median_distance = float(np.median(distances)) if distances else 0.0
+            self.distance_detail_label.setVisible(True)
+            self.distance_detail_label.setText(
+                (
+                    f"Average round-trip distance: {mean_distance:.1f} km • Median: {median_distance:.1f} km"
+                )
+            )
+            messages.append(
+                f"distance histogram built from {len(distances)} ride{'s' if len(distances) != 1 else ''}"
+            )
+        else:
+            self.distance_stack.setCurrentIndex(1)
+            self.distance_detail_label.setVisible(False)
+            self.distance_detail_label.clear()
+            self.distance_placeholder.setText(
+                "Log rides to reveal how their distances are distributed."
+            )
+
+        route_stats = self.db_manager.fetch_route_cost_summary()
+        self._configure_route_plot()
+        if route_stats:
+            self.route_stack.setCurrentIndex(0)
+            x_positions = list(range(len(route_stats)))
+            totals = [stat["total_cost"] for stat in route_stats]
+            bar = pg.BarGraphItem(
+                x=x_positions,
+                height=totals,
+                width=0.6,
+                brush=pg.mkBrush(QColor("#9b59ff")),
+                pen=pg.mkPen(QColor("#2b1f3c"), width=1),
+            )
+            self.route_plot.addItem(bar)
+            bottom_axis = self.route_plot.getAxis("bottom")
+            tick_pairs = []
+            for idx, stat in enumerate(route_stats):
+                label = f"{stat['start']} → {stat['destination']}"
+                if len(label) > 26:
+                    label = label[:23] + "…"
+                tick_pairs.append((idx, label))
+            bottom_axis.setTicks([tick_pairs])
+            self.route_plot.setXRange(-0.6, len(route_stats) - 0.4, padding=0.02)
+            max_total = max(totals) if totals else 0.0
+            self.route_plot.setYRange(0, max(1.0, max_total * 1.15), padding=0.02)
+            leader = route_stats[0]
+            self.route_detail_label.setVisible(True)
+            self.route_detail_label.setText(
+                (
+                    f"Most expensive route: {leader['start']} → {leader['destination']} spanning "
+                    f"{leader['ride_count']} ride{'s' if leader['ride_count'] != 1 else ''} at €{leader['avg_cost']:.2f} on average."
+                )
+            )
+            messages.append(
+                f"route spend chart across {len(route_stats)} route{'s' if len(route_stats) != 1 else ''}"
+            )
+        else:
+            self.route_stack.setCurrentIndex(1)
+            self.route_detail_label.setVisible(False)
+            self.route_detail_label.clear()
+            self.route_placeholder.setText(
+                "When rides are saved, the biggest start→destination pairs show up here."
+            )
+
         if messages:
             summary = "; ".join(messages)
             self.activity_event.emit("info", "Analytics refreshed", summary.capitalize() + ".")
@@ -4026,6 +4432,45 @@ class AnalyticsTab(QWidget):
         plot_item.setMenuEnabled(False)
         plot_item.getAxis("right").setVisible(False)
         plot_item.getAxis("top").setVisible(False)
+        self._style_axis(plot_item, "left")
+        self._style_axis(plot_item, "bottom")
+
+    def _configure_driver_plot(self) -> None:
+        plot_item = self.driver_plot.getPlotItem()
+        plot_item.clear()
+        view_box = plot_item.getViewBox()
+        view_box.setBackgroundColor(self._view_background)
+        plot_item.setMenuEnabled(False)
+        plot_item.showGrid(x=False, y=True, alpha=0.15)
+        plot_item.getAxis("right").setVisible(False)
+        self.driver_plot.setLabel("left", "Drives")
+        self.driver_plot.setLabel("bottom", "Member")
+        self._style_axis(plot_item, "left")
+        self._style_axis(plot_item, "bottom")
+
+    def _configure_distance_plot(self) -> None:
+        plot_item = self.distance_plot.getPlotItem()
+        plot_item.clear()
+        view_box = plot_item.getViewBox()
+        view_box.setBackgroundColor(self._view_background)
+        plot_item.setMenuEnabled(False)
+        plot_item.showGrid(x=False, y=True, alpha=0.15)
+        plot_item.getAxis("right").setVisible(False)
+        self.distance_plot.setLabel("left", "Ride count")
+        self.distance_plot.setLabel("bottom", "Round-trip distance (km)")
+        self._style_axis(plot_item, "left")
+        self._style_axis(plot_item, "bottom")
+
+    def _configure_route_plot(self) -> None:
+        plot_item = self.route_plot.getPlotItem()
+        plot_item.clear()
+        view_box = plot_item.getViewBox()
+        view_box.setBackgroundColor(self._view_background)
+        plot_item.setMenuEnabled(False)
+        plot_item.showGrid(x=False, y=True, alpha=0.12)
+        plot_item.getAxis("right").setVisible(False)
+        self.route_plot.setLabel("left", "Total spend (€)")
+        self.route_plot.setLabel("bottom", "Route")
         self._style_axis(plot_item, "left")
         self._style_axis(plot_item, "bottom")
 
